@@ -20,9 +20,10 @@ router.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // ─── API: Diagnostic Outbound Fetch ───────────────────────────────
 router.get('/api/test-fetch', async (req, res) => {
   const testUrl = req.query.url || 'https://anichin.moe/swallowed-star-episode-201-subtitle-indonesia/';
+  const isDirect = req.query.direct === '1';
   const proxyUrl = process.env.PROXY_URL || process.env.CLOUDFLARE_WORKER_URL;
   const cleanProxy = proxyUrl ? proxyUrl.replace(/\/+$/, '') : null;
-  const target = cleanProxy ? `${cleanProxy}/?url=${encodeURIComponent(testUrl)}` : testUrl;
+  const target = (!isDirect && cleanProxy) ? `${cleanProxy}/?url=${encodeURIComponent(testUrl)}` : testUrl;
 
   try {
     const axios = require('axios');
@@ -752,7 +753,7 @@ router.get('/', (req, res) => {
 
       // Deteksi series_id dan n dari URL jika memungkinkan
       // contoh: https://anichin.moe/swallowed-star-episode-200-subtitle-indonesia/
-      const match = url.match(/anichin\.moe\\/([a-z0-9-]+?)-episode-(\\d+)/i);
+      const match = url.match(/\/([a-z0-9-]+?)-episode-(\d+)/i);
       const series_id = match ? match[1] : null;
       const n = match ? parseInt(match[2], 10) : null;
 
