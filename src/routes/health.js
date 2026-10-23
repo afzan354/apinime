@@ -16,7 +16,34 @@ router.get('/', async (req, res) => {
   const proxyConfigured = !!(process.env.PROXY_URL || process.env.CLOUDFLARE_WORKER_URL);
 
   let debugTest = null;
-  if (req.query.test_url) {
+  const proxyUrl = process.env.PROXY_URL || process.env.CLOUDFLARE_WORKER_URL;
+
+  if (req.query.test_proxy) {
+    try {
+      const cleanProxy = (proxyUrl || '').replace(/\/+$/, '');
+      const testTarget = req.query.url || 'https://anichin.moe';
+      const proxyReqUrl = `${cleanProxy}/?url=${encodeURIComponent(testTarget)}`;
+      const pRes = await axios.get(proxyReqUrl, {
+        timeout: 10000,
+        validateStatus: () => true,
+      });
+      debugTest = {
+        proxyUrlConfigured: !!proxyUrl,
+        proxyHost: proxyUrl ? new URL(proxyUrl).hostname : null,
+        target: testTarget,
+        status: pRes.status,
+        statusText: pRes.statusText,
+        contentType: pRes.headers['content-type'],
+        dataLength: pRes.data ? (typeof pRes.data === 'string' ? pRes.data.length : JSON.stringify(pRes.data).length) : 0,
+        dataPreview: typeof pRes.data === 'string' ? pRes.data.slice(0, 300) : pRes.data,
+      };
+    } catch (e) {
+      debugTest = {
+        proxyError: e.message,
+        code: e.code,
+      };
+    }
+  } else if (req.query.test_url) {
     try {
       const target = String(req.query.test_url);
       const testRes = await axios.get(target, {
