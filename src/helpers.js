@@ -13,7 +13,7 @@ const CACHE_HOME = 60;
 const CACHE_SERIES = 300;
 const CACHE_SCHEDULE = 600;
 const CACHE_GENRES = 86400;
-const CACHE_PLAY = 900; // 15 menit
+const CACHE_PLAY = 86400 * 30; // 30 hari (embed URL video sifatnya permanen)
 
 // In-memory cache sederhana untuk serverless cold-start efficiency
 const memoryCache = new Map();

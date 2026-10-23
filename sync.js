@@ -16,12 +16,14 @@ require('dotenv').config();
 const cheerio = require('cheerio');
 const { query, checkDb } = require('./src/db');
 const { getSourceBaseUrl, makeAbsolute, slugify } = require('./src/helpers');
-const { fetchHtml, scrapeSeriesPage } = require('./src/scraper');
+const { fetchHtml, scrapeSeriesPage, scrapeEpisodeStream } = require('./src/scraper');
 
 // Parse argumen CLI
 const args = process.argv.slice(2);
 let maxPages = 1;
 let scheduleOnly = false;
+let streamsOnly = false;
+let streamsLimit = 50;
 
 for (const arg of args) {
   if (arg.startsWith('--pages=')) {
@@ -29,6 +31,12 @@ for (const arg of args) {
   }
   if (arg === '--schedule') {
     scheduleOnly = true;
+  }
+  if (arg.startsWith('--streams')) {
+    streamsOnly = true;
+    if (arg.includes('=')) {
+      streamsLimit = Math.max(1, parseInt(arg.split('=')[1], 10) || 50);
+    }
   }
 }
 
@@ -248,6 +256,50 @@ async function scrapeLatestReleases() {
 }
 
 /**
+ * Pre-resolve link streaming video (episode_streams) ke database TiDB Cloud
+ */
+async function syncStreamsForEpisodes(limit = 40) {
+  console.log(`\n  🎬 Menyinkronkan link streaming video (episode_streams)...`);
+  const episodesToResolve = await query(
+    `SELECT e.id, e.series_id, e.n, e.source_url
+     FROM episodes e
+     LEFT JOIN episode_streams es ON e.id = es.episode_id AND es.expires_at > NOW()
+     WHERE es.id IS NULL AND e.source_url IS NOT NULL AND e.source_url != ''
+     ORDER BY e.released_at DESC, e.id DESC
+     LIMIT ?`,
+    [limit]
+  );
+
+  console.log(`  Ditemukan ${episodesToResolve.length} episode yang siap di-resolve...`);
+
+  let count = 0;
+  for (let i = 0; i < episodesToResolve.length; i++) {
+    const ep = episodesToResolve[i];
+    process.stdout.write(`    [${i + 1}/${episodesToResolve.length}] ${ep.series_id} Ep ${ep.n}... `);
+    try {
+      const s = await scrapeEpisodeStream(ep.source_url, 8000);
+      if (s && s.embedUrl) {
+        const expiresAt = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ');
+        await query(
+          `INSERT INTO episode_streams (episode_id, provider, embed_url, stream_data, subtitle_data, resolved_at, expires_at)
+           VALUES (?, ?, ?, ?, ?, NOW(), ?)
+           ON DUPLICATE KEY UPDATE embed_url = VALUES(embed_url), stream_data = VALUES(stream_data), expires_at = VALUES(expires_at)`,
+          [ep.id, s.provider, s.embedUrl, JSON.stringify(s.sources), JSON.stringify(s.subtitles), expiresAt]
+        );
+        console.log(`✓ (${s.sources.length} mirrors: ${s.provider})`);
+        count++;
+      } else {
+        console.log('✗');
+      }
+    } catch (err) {
+      console.log('✗', err.message);
+    }
+  }
+
+  console.log(`  ✓ Berhasil menyimpan ${count} link streaming video permanen.`);
+}
+
+/**
  * Jalankan proses sinkronisasi
  */
 async function main() {
@@ -263,6 +315,12 @@ async function main() {
     process.exit(1);
   }
   console.log('  ✓ Koneksi database terhubung dengan sukses!\n');
+
+  if (streamsOnly) {
+    await syncStreamsForEpisodes(streamsLimit);
+    console.log('\n  ✓ Sinkronisasi streaming video selesai!');
+    process.exit(0);
+  }
 
   if (scheduleOnly) {
     await scrapeSchedule();
@@ -298,8 +356,11 @@ async function main() {
     }
   }
 
+  // 5. Simpan link streaming video untuk episode-episode terbaru
+  await syncStreamsForEpisodes(30);
+
   console.log(`\n  ═══════════════════════════════════════════════`);
-  console.log(`  ✓ Selesai! Seluruh data anime & episode berhasil ditarik.`);
+  console.log(`  ✓ Selesai! Seluruh data anime, episode & streaming video berhasil ditarik.`);
   console.log(`  Buka API kamu: https://apinime-omega.vercel.app/api/v1/home\n`);
   process.exit(0);
 }
