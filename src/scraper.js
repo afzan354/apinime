@@ -68,17 +68,19 @@ async function fetchHtml(url, timeoutMs = 8000) {
 /**
  * Scrape episode video stream & mirrors (for POST /play)
  */
-async function scrapeEpisodeStream(episodeSourceUrl, timeoutMs = 8000) {
-  const html = await fetchHtml(episodeSourceUrl, timeoutMs);
+/**
+ * Ekstrak data stream video dari HTML string (bisa dipanggil dari Vercel atau hasil ingest browser)
+ */
+function parseStreamFromHtml(html) {
   if (!html) return null;
 
   const $ = cheerio.load(html);
 
-  // 1. Cari iframe utama
+  // 1. Cari iframe utama (perbaikan selector: iframe[src], bukan iframe[@src])
   let embedUrl = null;
   let provider = 'unknown';
 
-  const firstIframe = $('iframe[@src], iframe[data-src]').first();
+  const firstIframe = $('iframe[src], iframe[data-src]').first();
   if (firstIframe.length) {
     embedUrl = firstIframe.attr('src') || firstIframe.attr('data-src') || null;
   }
@@ -184,32 +186,23 @@ async function scrapeEpisodeStream(episodeSourceUrl, timeoutMs = 8000) {
 }
 
 /**
- * Scrape halaman detail series & episode-episodenya
+ * Scrape episode video stream & mirrors (for POST /play)
  */
-async function scrapeSeriesPage(url, forceSlug = null) {
-  let finalUrl = makeAbsolute(url);
-  let html = await fetchHtml(finalUrl, 9000);
+async function scrapeEpisodeStream(episodeSourceUrl, timeoutMs = 8000) {
+  const html = await fetchHtml(episodeSourceUrl, timeoutMs);
+  if (!html) return null;
+  return parseStreamFromHtml(html);
+}
 
-  // Fallback coba variasi URL anichin (dengan atau tanpa prefix /anime/) jika belum berhasil
-  if (!html && forceSlug) {
-    const candidates = [
-      `${getSourceBaseUrl()}/${forceSlug}/`,
-      `${getSourceBaseUrl()}/anime/${forceSlug}/`,
-    ].filter((u) => u !== finalUrl);
-
-    for (const altUrl of candidates) {
-      html = await fetchHtml(altUrl, 9000);
-      if (html) {
-        finalUrl = altUrl;
-        break;
-      }
-    }
-  }
-
+/**
+ * Parse HTML halaman detail series & simpan ke database TiDB Cloud
+ */
+async function parseAndSaveSeriesHtml(html, forceSlug = null, explicitUrl = null) {
   if (!html) return null;
 
   const $ = cheerio.load(html);
-  const parsedPath = new URL(finalUrl).pathname.replace(/^\/+|\/+$/g, '');
+  let finalUrl = explicitUrl || (forceSlug ? `${getSourceBaseUrl()}/${forceSlug}/` : '');
+  const parsedPath = finalUrl ? new URL(finalUrl).pathname.replace(/^\/+|\/+$/g, '') : '';
   const slug = forceSlug || parsedPath.split('/').pop();
 
   // 1. Judul
@@ -436,8 +429,38 @@ async function scrapeSeriesPage(url, forceSlug = null) {
   };
 }
 
+/**
+ * Scrape halaman detail series & episode-episodenya via backend fetchHtml
+ */
+async function scrapeSeriesPage(url, forceSlug = null) {
+  let finalUrl = makeAbsolute(url);
+  let html = await fetchHtml(finalUrl, 9000);
+
+  // Fallback coba variasi URL anichin (dengan atau tanpa prefix /anime/) jika belum berhasil
+  if (!html && forceSlug) {
+    const candidates = [
+      `${getSourceBaseUrl()}/${forceSlug}/`,
+      `${getSourceBaseUrl()}/anime/${forceSlug}/`,
+    ].filter((u) => u !== finalUrl);
+
+    for (const altUrl of candidates) {
+      html = await fetchHtml(altUrl, 9000);
+      if (html) {
+        finalUrl = altUrl;
+        break;
+      }
+    }
+  }
+
+  if (!html) return null;
+  return await parseAndSaveSeriesHtml(html, forceSlug, finalUrl);
+}
+
 module.exports = {
   fetchHtml,
   scrapeEpisodeStream,
   scrapeSeriesPage,
+  parseStreamFromHtml,
+  parseAndSaveSeriesHtml,
 };
+

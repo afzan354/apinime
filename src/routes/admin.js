@@ -4,14 +4,14 @@
  * ═══════════════════════════════════════════════════
  *  Dashboard web yang bisa diakses langsung lewat browser HP
  *  atau laptop untuk memperbarui data anime, episode, dan video
- *  streaming ke TiDB Cloud tanpa perlu menyalakan laptop lokal.
+ *  streaming ke TiDB Cloud secara 100% lancar tanpa blokir Cloudflare.
  */
 
 const express = require('express');
 const router = express.Router();
 const { query } = require('../db');
 const { getSourceBaseUrl } = require('../helpers');
-const { scrapeSeriesPage, scrapeEpisodeStream } = require('../scraper');
+const { parseAndSaveSeriesHtml, parseStreamFromHtml } = require('../scraper');
 
 // ─── API: Ambil Statistik Terkini ──────────────────────────────────
 router.get('/api/stats', async (req, res) => {
@@ -30,109 +30,105 @@ router.get('/api/stats', async (req, res) => {
       streams: r3 ? r3.total : 0,
       recent: r4 || [],
       upstream: getSourceBaseUrl(),
+      worker: process.env.PROXY_URL || 'https://anibli.wedussamsung6.workers.dev',
     });
   } catch (err) {
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-// ─── API: Sinkronkan 1 Judul Tertentu ───────────────────────────────
-router.post('/api/sync-series', async (req, res) => {
-  const slug = (req.body.slug || '').trim().replace(/^\/+|\/+$/g, '');
-  if (!slug) {
-    return res.status(400).json({ ok: false, error: 'Slug judul wajib diisi!' });
-  }
-
-  const logs = [];
+// ─── API: Ambil Daftar Episode yang Belum Punya Link Streaming ──────
+router.get('/api/missing-streams', async (req, res) => {
+  const limit = Math.min(20, Math.max(1, parseInt(req.query.limit || 5, 10)));
   try {
-    logs.push(`🔍 Mencari data untuk series: "${slug}"...`);
-    const sourceUrl = `${getSourceBaseUrl()}/${slug}/`;
-    const scraped = await scrapeSeriesPage(sourceUrl, slug);
+    const rows = await query(`
+      SELECT e.id, e.series_id, e.n, e.source_url
+      FROM episodes e
+      LEFT JOIN episode_streams es ON e.id = es.episode_id AND es.expires_at > NOW()
+      WHERE es.id IS NULL AND e.source_url IS NOT NULL AND e.source_url != ''
+      ORDER BY e.released_at DESC, e.id DESC
+      LIMIT ?
+    `, [limit]);
 
-    if (!scraped) {
-      logs.push(`✗ Gagal mengambil halaman "${slug}" dari upstream.`);
-      return res.json({ ok: false, logs });
-    }
-
-    const epCount = scraped.episodes ? scraped.episodes.length : 0;
-    logs.push(`✓ Berhasil menyimpan detail "${scraped.title || slug}" dengan ${epCount} episode!`);
-
-    // Auto-resolve video link untuk episode terbaru
-    if (scraped.episodes && scraped.episodes.length > 0) {
-      const latestEp = scraped.episodes[0]; // biasanya episode terbesar
-      logs.push(`🎬 Mencoba resolve streaming episode terbaru (Ep ${latestEp.n})...`);
-      try {
-        const stream = await scrapeEpisodeStream(latestEp.source_url, 9000);
-        if (stream && stream.embedUrl) {
-          // Cari episode_id di database
-          const epRows = await query(
-            'SELECT id FROM episodes WHERE series_id = ? AND n = ? LIMIT 1',
-            [slug, latestEp.n]
-          );
-          if (epRows.length > 0) {
-            const epId = epRows[0].id;
-            const expiresAt = new Date(Date.now() + 30 * 24 * 3600 * 1000)
-              .toISOString().slice(0, 19).replace('T', ' ');
-            await query(
-              `INSERT INTO episode_streams
-                (episode_id, provider, embed_url, stream_data, subtitle_data, resolved_at, expires_at)
-               VALUES (?, ?, ?, ?, ?, NOW(), ?)
-               ON DUPLICATE KEY UPDATE embed_url = VALUES(embed_url), stream_data = VALUES(stream_data), expires_at = VALUES(expires_at)`,
-              [epId, stream.provider, stream.embedUrl, JSON.stringify(stream.sources), JSON.stringify(stream.subtitles), expiresAt]
-            );
-            logs.push(`✓ Streaming Ep ${latestEp.n} tersimpan (${stream.sources.length} mirrors: ${stream.provider})!`);
-          }
-        } else {
-          logs.push(`ℹ Video Ep ${latestEp.n} belum siap di upstream atau butuh direct browser client.`);
-        }
-      } catch (stErr) {
-        logs.push(`⚠ Streaming Ep ${latestEp.n}: ${stErr.message}`);
-      }
-    }
-
-    return res.json({ ok: true, logs });
+    return res.json({ ok: true, items: rows });
   } catch (err) {
-    logs.push(`✗ Error: ${err.message}`);
-    return res.status(500).json({ ok: false, logs });
+    return res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-// ─── API: Simpan Hasil Stream dari Browser HP (Client Direct) ───────
-router.post('/api/save-stream', async (req, res) => {
-  const { series_id, n, provider, embed_url, sources, subtitles } = req.body;
-  if (!series_id || !n || !embed_url) {
-    return res.status(400).json({ ok: false, error: 'Data tidak lengkap' });
+// ─── API: Ingest Halaman Series (Dikirim oleh Browser) ──────────────
+router.post('/api/ingest-series', async (req, res) => {
+  const { slug, html, url } = req.body;
+  if (!slug || !html) {
+    return res.status(400).json({ ok: false, error: 'Slug dan HTML wajib dikirim!' });
   }
 
   try {
-    const epRows = await query(
-      'SELECT id FROM episodes WHERE series_id = ? AND n = ? LIMIT 1',
-      [series_id, parseInt(n, 10)]
-    );
-    if (!epRows.length) {
-      return res.status(404).json({ ok: false, error: 'Episode tidak ditemukan di database' });
+    const saved = await parseAndSaveSeriesHtml(html, slug, url);
+    if (!saved) {
+      return res.status(422).json({ ok: false, error: 'Gagal mem-parse struktur HTML.' });
     }
 
-    const epId = epRows[0].id;
-    const expiresAt = new Date(Date.now() + 30 * 24 * 3600 * 1000)
-      .toISOString().slice(0, 19).replace('T', ' ');
+    return res.json({
+      ok: true,
+      title: saved.title,
+      episode_count: saved.episode_count,
+      latest_episode: saved.latest_episode,
+      first_episode: saved.episodes && saved.episodes.length > 0 ? saved.episodes[0] : null,
+    });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
 
-    await query(
-      `INSERT INTO episode_streams
-        (episode_id, provider, embed_url, stream_data, subtitle_data, resolved_at, expires_at)
-       VALUES (?, ?, ?, ?, ?, NOW(), ?)
-       ON DUPLICATE KEY UPDATE embed_url = VALUES(embed_url), stream_data = VALUES(stream_data), expires_at = VALUES(expires_at)`,
-      [
-        epId,
-        provider || 'unknown',
-        embed_url,
-        JSON.stringify(sources || []),
-        JSON.stringify(subtitles || []),
-        expiresAt,
-      ]
-    );
+// ─── API: Ingest Halaman Episode Stream (Dikirim oleh Browser) ──────
+router.post('/api/ingest-stream', async (req, res) => {
+  const { episode_id, series_id, n, html } = req.body;
+  if (!html) {
+    return res.status(400).json({ ok: false, error: 'HTML episode stream wajib dikirim!' });
+  }
 
-    return res.json({ ok: true, message: `Episode ${n} (${series_id}) berhasil disimpan dari browser!` });
+  try {
+    const stream = parseStreamFromHtml(html);
+    if (!stream || !stream.embedUrl) {
+      return res.status(422).json({ ok: false, error: 'Tidak ditemukan video iframe di dalam HTML.' });
+    }
+
+    // Cari episode_id jika belum diberikan
+    let targetEpId = episode_id;
+    if (!targetEpId && series_id && n) {
+      const epRows = await query(
+        'SELECT id FROM episodes WHERE series_id = ? AND n = ? LIMIT 1',
+        [series_id, parseInt(n, 10)]
+      );
+      if (epRows.length > 0) targetEpId = epRows[0].id;
+    }
+
+    if (targetEpId) {
+      const expiresAt = new Date(Date.now() + 30 * 24 * 3600 * 1000)
+        .toISOString().slice(0, 19).replace('T', ' ');
+      await query(
+        `INSERT INTO episode_streams
+          (episode_id, provider, embed_url, stream_data, subtitle_data, resolved_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, NOW(), ?)
+         ON DUPLICATE KEY UPDATE embed_url = VALUES(embed_url), stream_data = VALUES(stream_data), expires_at = VALUES(expires_at)`,
+        [
+          targetEpId,
+          stream.provider,
+          stream.embedUrl,
+          JSON.stringify(stream.sources),
+          JSON.stringify(stream.subtitles),
+          expiresAt,
+        ]
+      );
+    }
+
+    return res.json({
+      ok: true,
+      provider: stream.provider,
+      embedUrl: stream.embedUrl,
+      mirrors: stream.sources ? stream.sources.length : 0,
+    });
   } catch (err) {
     return res.status(500).json({ ok: false, error: err.message });
   }
@@ -161,9 +157,6 @@ router.get('/', (req, res) => {
       --accent: #06b6d4;
       --accent-glow: rgba(6, 182, 212, 0.35);
       --success: #10b981;
-      --success-glow: rgba(16, 185, 129, 0.25);
-      --warning: #f59e0b;
-      --danger: #ef4444;
       --text: #f3f4f6;
       --text-muted: #9ca3af;
       --font: 'Plus Jakarta Sans', -apple-system, sans-serif;
@@ -179,12 +172,12 @@ router.get('/', (req, res) => {
       color: var(--text);
       font-family: var(--font);
       min-height: 100vh;
-      padding: 20px 16px 40px;
+      padding: 16px 14px 40px;
       line-height: 1.5;
     }
 
     .container {
-      max-width: 680px;
+      max-width: 640px;
       margin: 0 auto;
     }
 
@@ -193,28 +186,28 @@ router.get('/', (req, res) => {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      margin-bottom: 24px;
-      padding-bottom: 16px;
+      margin-bottom: 20px;
+      padding-bottom: 14px;
       border-bottom: 1px solid var(--card-border);
     }
     .brand {
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 10px;
     }
     .logo-badge {
-      width: 44px;
-      height: 44px;
+      width: 42px;
+      height: 42px;
       border-radius: 12px;
       background: linear-gradient(135deg, var(--primary), var(--accent));
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 22px;
+      font-size: 20px;
       box-shadow: 0 8px 20px var(--primary-glow);
     }
     .brand-title {
-      font-size: 1.25rem;
+      font-size: 1.2rem;
       font-weight: 800;
       letter-spacing: -0.02em;
       background: linear-gradient(to right, #fff, #cbd5e1);
@@ -222,65 +215,54 @@ router.get('/', (req, res) => {
       -webkit-text-fill-color: transparent;
     }
     .brand-subtitle {
-      font-size: 0.78rem;
+      font-size: 0.74rem;
       color: var(--text-muted);
     }
     .status-pill {
       display: flex;
       align-items: center;
       gap: 6px;
-      font-size: 0.75rem;
+      font-size: 0.72rem;
       font-weight: 600;
       color: var(--success);
       background: rgba(16, 185, 129, 0.12);
       border: 1px solid rgba(16, 185, 129, 0.25);
-      padding: 6px 12px;
+      padding: 5px 10px;
       border-radius: 9999px;
     }
     .status-dot {
-      width: 8px;
-      height: 8px;
+      width: 7px;
+      height: 7px;
       border-radius: 50%;
       background: var(--success);
-      box-shadow: 0 0 8px var(--success);
-      animation: pulse 2s infinite;
-    }
-    @keyframes pulse {
-      0%, 100% { opacity: 1; transform: scale(1); }
-      50% { opacity: 0.4; transform: scale(0.85); }
+      box-shadow: 0 0 6px var(--success);
     }
 
     /* Stats Grid */
     .stats-grid {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
-      gap: 12px;
-      margin-bottom: 24px;
+      gap: 10px;
+      margin-bottom: 20px;
     }
     .stat-card {
       background: var(--card-bg);
       backdrop-filter: blur(12px);
       -webkit-backdrop-filter: blur(12px);
       border: 1px solid var(--card-border);
-      border-radius: 16px;
-      padding: 16px 14px;
+      border-radius: 14px;
+      padding: 14px 10px;
       text-align: center;
-      transition: transform 0.2s, border-color 0.2s;
-    }
-    .stat-card:hover {
-      transform: translateY(-2px);
-      border-color: rgba(255, 255, 255, 0.16);
     }
     .stat-val {
-      font-size: 1.6rem;
+      font-size: 1.5rem;
       font-weight: 800;
       color: #fff;
-      font-feature-settings: "tnum";
     }
     .stat-label {
-      font-size: 0.75rem;
+      font-size: 0.72rem;
       color: var(--text-muted);
-      margin-top: 4px;
+      margin-top: 2px;
       text-transform: uppercase;
       letter-spacing: 0.04em;
     }
@@ -291,15 +273,15 @@ router.get('/', (req, res) => {
       backdrop-filter: blur(14px);
       -webkit-backdrop-filter: blur(14px);
       border: 1px solid var(--card-border);
-      border-radius: 20px;
-      padding: 22px;
-      margin-bottom: 20px;
-      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.25);
+      border-radius: 18px;
+      padding: 18px;
+      margin-bottom: 16px;
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.25);
     }
     .card-title {
-      font-size: 1rem;
+      font-size: 0.95rem;
       font-weight: 700;
-      margin-bottom: 14px;
+      margin-bottom: 12px;
       display: flex;
       align-items: center;
       gap: 8px;
@@ -308,8 +290,8 @@ router.get('/', (req, res) => {
     /* Input & Buttons */
     .input-group {
       display: flex;
-      gap: 10px;
-      margin-bottom: 12px;
+      gap: 8px;
+      margin-bottom: 10px;
     }
     @media (max-width: 480px) {
       .input-group { flex-direction: column; }
@@ -319,10 +301,10 @@ router.get('/', (req, res) => {
       background: rgba(10, 15, 26, 0.8);
       border: 1px solid var(--card-border);
       border-radius: 12px;
-      padding: 12px 16px;
+      padding: 12px 14px;
       color: #fff;
       font-family: var(--font);
-      font-size: 0.92rem;
+      font-size: 0.9rem;
       outline: none;
       transition: border-color 0.2s, box-shadow 0.2s;
     }
@@ -335,10 +317,10 @@ router.get('/', (req, res) => {
       color: #fff;
       font-family: var(--font);
       font-weight: 600;
-      font-size: 0.92rem;
+      font-size: 0.9rem;
       border: none;
       border-radius: 12px;
-      padding: 12px 20px;
+      padding: 12px 18px;
       cursor: pointer;
       display: inline-flex;
       align-items: center;
@@ -346,7 +328,7 @@ router.get('/', (req, res) => {
       gap: 8px;
       transition: all 0.2s;
       white-space: nowrap;
-      box-shadow: 0 4px 14px var(--primary-glow);
+      box-shadow: 0 4px 12px var(--primary-glow);
     }
     button:hover:not(:disabled) {
       filter: brightness(1.1);
@@ -364,12 +346,9 @@ router.get('/', (req, res) => {
       color: #e2e8f0;
       box-shadow: none;
     }
-    .btn-secondary:hover:not(:disabled) {
-      background: rgba(255, 255, 255, 0.14);
-    }
     .btn-accent {
       background: linear-gradient(135deg, var(--accent), #0891b2);
-      box-shadow: 0 4px 14px var(--accent-glow);
+      box-shadow: 0 4px 12px var(--accent-glow);
     }
 
     /* Chips */
@@ -377,10 +356,10 @@ router.get('/', (req, res) => {
       display: flex;
       flex-wrap: wrap;
       gap: 6px;
-      margin-top: 8px;
+      margin-top: 6px;
     }
     .chip {
-      font-size: 0.75rem;
+      font-size: 0.72rem;
       padding: 4px 10px;
       border-radius: 8px;
       background: rgba(255, 255, 255, 0.05);
@@ -413,7 +392,7 @@ router.get('/', (req, res) => {
       margin-bottom: 8px;
     }
     .console-title {
-      font-size: 0.8rem;
+      font-size: 0.78rem;
       font-weight: 700;
       color: var(--text-muted);
       text-transform: uppercase;
@@ -422,7 +401,7 @@ router.get('/', (req, res) => {
     .clear-btn {
       background: transparent;
       box-shadow: none;
-      font-size: 0.75rem;
+      font-size: 0.72rem;
       color: var(--text-muted);
       padding: 2px 6px;
     }
@@ -430,13 +409,13 @@ router.get('/', (req, res) => {
     .console-box {
       background: #050811;
       border: 1px solid rgba(255, 255, 255, 0.06);
-      border-radius: 14px;
-      padding: 14px;
+      border-radius: 12px;
+      padding: 12px;
       min-height: 140px;
-      max-height: 260px;
+      max-height: 280px;
       overflow-y: auto;
       font-family: var(--font-mono);
-      font-size: 0.82rem;
+      font-size: 0.8rem;
       line-height: 1.6;
     }
     .log-line {
@@ -448,11 +427,20 @@ router.get('/', (req, res) => {
     .log-line.warning { color: #fde047; }
     .log-line.error { color: #fca5a5; }
 
-    /* Footer */
+    .badge-client {
+      font-size: 0.68rem;
+      background: rgba(99, 102, 241, 0.2);
+      border: 1px solid var(--primary);
+      color: #a5b4fc;
+      padding: 2px 8px;
+      border-radius: 6px;
+      margin-left: 6px;
+    }
+
     .footer {
       text-align: center;
-      margin-top: 30px;
-      font-size: 0.8rem;
+      margin-top: 24px;
+      font-size: 0.78rem;
       color: var(--text-muted);
     }
     .footer a {
@@ -498,21 +486,22 @@ router.get('/', (req, res) => {
     <div class="card">
       <div class="card-title">
         <span>🎯</span>
-        <span>Update Anime Tertentu (Episode & Video)</span>
+        <span>Update 1 Anime Tertentu</span>
+        <span class="badge-client">Direct Connection</span>
       </div>
       <div class="input-group">
-        <input type="text" id="series-slug" placeholder="Ketik slug (contoh: link-click-season-3)" />
-        <button id="btn-sync-series" onclick="syncSeries()">
+        <input type="text" id="series-slug" placeholder="Ketik slug (contoh: spare-me-great-lord-season-3)" />
+        <button id="btn-sync-series" onclick="syncSeriesClient()">
           <span>🔄</span>
           <span>Update Series</span>
         </button>
       </div>
       <div class="chips">
-        <span class="chip" onclick="setSlug('link-click-season-3')">link-click-season-3</span>
+        <span class="chip" onclick="setSlug('spare-me-great-lord-season-3')">spare-me-great-lord-s3</span>
+        <span class="chip" onclick="setSlug('swallowed-star')">swallowed-star</span>
         <span class="chip" onclick="setSlug('soul-land-2-the-unrivaled-tang-sect')">soul-land-2</span>
         <span class="chip" onclick="setSlug('perfect-world')">perfect-world</span>
-        <span class="chip" onclick="setSlug('swallowed-star')">swallowed-star</span>
-        <span class="chip" onclick="setSlug('beyond-times-gaze')">beyond-times-gaze</span>
+        <span class="chip" onclick="setSlug('link-click-season-3')">link-click-season-3</span>
       </div>
     </div>
 
@@ -520,12 +509,12 @@ router.get('/', (req, res) => {
     <div class="card">
       <div class="card-title">
         <span>⚡</span>
-        <span>Aksi Cepat Otomatis</span>
+        <span>Aksi Cepat Streaming Video</span>
       </div>
       <div class="btn-grid">
-        <button class="btn-accent" id="btn-cron" onclick="triggerCron()">
-          <span>🚀</span>
-          <span>Jalankan Auto-Fill Cron</span>
+        <button class="btn-accent" id="btn-fill-streams" onclick="fillMissingStreamsClient()">
+          <span>🎬</span>
+          <span>Isi 5 Link Streaming Kosong</span>
         </button>
         <button class="btn-secondary" id="btn-refresh-stats" onclick="loadStats()">
           <span>📊</span>
@@ -552,6 +541,8 @@ router.get('/', (req, res) => {
   </div>
 
   <script>
+    let WORKER_BASE = 'https://anibli.wedussamsung6.workers.dev';
+
     function log(msg, type = 'info') {
       const box = document.getElementById('console');
       const div = document.createElement('div');
@@ -569,6 +560,7 @@ router.get('/', (req, res) => {
       document.getElementById('series-slug').value = val;
     }
 
+    // Ambil statistik awal
     async function loadStats() {
       try {
         const res = await fetch('/admin/api/stats');
@@ -577,14 +569,27 @@ router.get('/', (req, res) => {
           document.getElementById('stat-series').textContent = data.series.toLocaleString();
           document.getElementById('stat-episodes').textContent = data.episodes.toLocaleString();
           document.getElementById('stat-streams').textContent = data.streams.toLocaleString();
-          log('Statistik database berhasil diperbarui.', 'success');
+          if (data.worker) WORKER_BASE = data.worker.replace(/\\/+$/, '');
+          log('Statistik database: ' + data.series + ' Series, ' + data.episodes + ' Episodes, ' + data.streams + ' Streams aktif.', 'success');
         }
       } catch (e) {
         log('Gagal memuat statistik: ' + e.message, 'error');
       }
     }
 
-    async function syncSeries() {
+    // Helper: Tarik HTML lewat Worker menggunakan koneksi HP pengguna (100% Anti-403)
+    async function fetchViaWorker(targetUrl) {
+      const cleanProxy = WORKER_BASE.replace(/\\/+$/, '');
+      const reqUrl = cleanProxy + '/?url=' + encodeURIComponent(targetUrl);
+      const res = await fetch(reqUrl);
+      if (!res.ok) {
+        throw new Error('HTTP ' + res.status + ' ' + res.statusText);
+      }
+      return await res.text();
+    }
+
+    // Update 1 Series (Client-Assisted: bypass Cloudflare WAF lewat IP HP)
+    async function syncSeriesClient() {
       const input = document.getElementById('series-slug');
       const slug = input.value.trim();
       if (!slug) {
@@ -594,57 +599,106 @@ router.get('/', (req, res) => {
 
       const btn = document.getElementById('btn-sync-series');
       btn.disabled = true;
-      btn.innerHTML = '<span>⏳</span><span>Memproses...</span>';
-      log('Memulai update series "' + slug + '"...', 'info');
+      btn.innerHTML = '<span>⏳</span><span>Mengambil data...</span>';
+      log('📱 Mengambil data "' + slug + '" lewat koneksi HP...', 'info');
 
       try {
-        const res = await fetch('/admin/api/sync-series', {
+        const targetUrl = 'https://anichin.moe/' + slug + '/';
+        const html = await fetchViaWorker(targetUrl);
+        log('✓ Berhasil mengambil HTML (' + Math.round(html.length / 1024) + ' KB)! Mengirim ke TiDB Cloud...', 'info');
+
+        // Kirim HTML ke backend Vercel untuk di-parse & disimpan
+        const ingestRes = await fetch('/admin/api/ingest-series', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ slug }),
+          body: JSON.stringify({ slug, html, url: targetUrl }),
         });
-        const data = await res.json();
-        if (data.logs) {
-          data.logs.forEach(l => {
-            const type = l.includes('✓') ? 'success' : (l.includes('✗') ? 'error' : 'info');
-            log(l, type);
-          });
+        const saved = await ingestRes.json();
+
+        if (saved.ok) {
+          log('✓ Sukses! Series "' + saved.title + '" tersimpan dengan ' + saved.episode_count + ' episode.', 'success');
+
+          // Auto-resolve episode terbaru jika ada
+          if (saved.first_episode && saved.first_episode.source_url) {
+            const ep = saved.first_episode;
+            log('🎬 Mengambil streaming episode terbaru (Ep ' + ep.n + ')...', 'info');
+            try {
+              const epHtml = await fetchViaWorker(ep.source_url);
+              const stRes = await fetch('/admin/api/ingest-stream', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ series_id: slug, n: ep.n, html: epHtml }),
+              });
+              const stData = await stRes.json();
+              if (stData.ok) {
+                log('✓ Streaming Ep ' + ep.n + ' berhasil tersimpan (' + stData.mirrors + ' mirrors: ' + stData.provider + ')!', 'success');
+              }
+            } catch (epErr) {
+              log('⚠ Gagal ambil streaming Ep ' + ep.n + ': ' + epErr.message, 'warning');
+            }
+          }
+        } else {
+          log('✗ Gagal simpan series: ' + (saved.error || 'Unknown error'), 'error');
         }
+
         await loadStats();
-      } catch (e) {
-        log('Error update series: ' + e.message, 'error');
+      } catch (err) {
+        log('✗ Gagal ambil halaman: ' + err.message, 'error');
       } finally {
         btn.disabled = false;
         btn.innerHTML = '<span>🔄</span><span>Update Series</span>';
       }
     }
 
-    async function triggerCron() {
-      const btn = document.getElementById('btn-cron');
+    // Isi 5 Link Streaming yang Kosong Secara Berurutan
+    async function fillMissingStreamsClient() {
+      const btn = document.getElementById('btn-fill-streams');
       btn.disabled = true;
-      btn.innerHTML = '<span>⏳</span><span>Menjalankan...</span>';
-      log('Menjalankan Auto-Fill Cron di cloud...', 'info');
+      btn.innerHTML = '<span>⏳</span><span>Memproses...</span>';
+      log('🔍 Mencari daftar episode yang belum memiliki link video...', 'info');
 
       try {
-        const res = await fetch('/api/v1/cron/fill');
+        const res = await fetch('/admin/api/missing-streams?limit=5');
         const data = await res.json();
-        if (data.log) {
-          data.log.forEach(l => {
-            const type = l.includes('✓') ? 'success' : (l.includes('✗') ? 'error' : 'info');
-            log(l, type);
-          });
+        if (!data.ok || !data.items || !data.items.length) {
+          log('Semua episode sudah memiliki link video aktif!', 'success');
+          return;
         }
-        log('Cron selesai dalam ' + data.elapsed_seconds + ' detik.', 'success');
+
+        log('Ditemukan ' + data.items.length + ' episode yang siap diisi. Memulai...', 'info');
+
+        for (let i = 0; i < data.items.length; i++) {
+          const ep = data.items[i];
+          log('[' + (i + 1) + '/' + data.items.length + '] Mengambil ' + ep.series_id + ' Ep ' + ep.n + '...', 'info');
+          try {
+            const epHtml = await fetchViaWorker(ep.source_url);
+            const stRes = await fetch('/admin/api/ingest-stream', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ episode_id: ep.id, series_id: ep.series_id, n: ep.n, html: epHtml }),
+            });
+            const stData = await stRes.json();
+            if (stData.ok) {
+              log('  ✓ ' + ep.series_id + ' Ep ' + ep.n + ' tersimpan (' + stData.mirrors + ' mirrors)!', 'success');
+            } else {
+              log('  ✗ ' + ep.series_id + ' Ep ' + ep.n + ': ' + (stData.error || 'Video tidak ditemukan'), 'warning');
+            }
+          } catch (e) {
+            log('  ✗ ' + ep.series_id + ' Ep ' + ep.n + ' gagal: ' + e.message, 'error');
+          }
+        }
+
+        log('✓ Proses pengisian 5 link streaming selesai!', 'success');
         await loadStats();
-      } catch (e) {
-        log('Error menjalankan cron: ' + e.message, 'error');
+      } catch (err) {
+        log('Error: ' + err.message, 'error');
       } finally {
         btn.disabled = false;
-        btn.innerHTML = '<span>🚀</span><span>Jalankan Auto-Fill Cron</span>';
+        btn.innerHTML = '<span>🎬</span><span>Isi 5 Link Streaming Kosong</span>';
       }
     }
 
-    // Auto-load stats saat pertama dibuka
+    // Auto load stats saat halaman dibuka
     loadStats();
   </script>
 </body>
