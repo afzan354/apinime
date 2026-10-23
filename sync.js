@@ -201,6 +201,53 @@ async function scrapeSchedule() {
 }
 
 /**
+ * Scrape halaman /donghua/ untuk mencatat rilis episode terbaru (Fresh section)
+ */
+async function scrapeLatestReleases() {
+  const url = `${getSourceBaseUrl()}/donghua/`;
+  console.log(`\n  🆕 Mengambil rilis episode terbaru (Fresh section): ${url}`);
+  const html = await fetchHtml(url, 8000);
+  if (!html) return;
+
+  const $ = cheerio.load(html);
+  const cards = $('div.bsx, article.bs, article');
+  let count = 0;
+
+  for (let i = 0; i < cards.length; i++) {
+    const card = $(cards[i]);
+    const a = card.find('a').first();
+    const href = makeAbsolute(a.attr('href') || '');
+    let title = a.attr('title') || card.find('h2, div.tt').first().text().trim();
+    if (!href || !title) continue;
+
+    const m = title.match(/^(.+?)\s+(?:Episode|Ep|Eps)\s+(\d+)/i);
+    if (!m) continue;
+
+    const seriesTitle = m[1].trim();
+    const epNum = parseInt(m[2], 10);
+    const seriesSlug = slugify(seriesTitle);
+
+    try {
+      await query(
+        'INSERT IGNORE INTO series (id, title, status) VALUES (?, ?, "Ongoing")',
+        [seriesSlug, seriesTitle]
+      );
+      await query(
+        `INSERT INTO episodes (series_id, n, title, source_url, released_at)
+         VALUES (?, ?, ?, ?, NOW())
+         ON DUPLICATE KEY UPDATE
+            source_url = VALUES(source_url),
+            released_at = COALESCE(released_at, NOW())`,
+        [seriesSlug, epNum, title, href]
+      );
+      count++;
+    } catch (e) {}
+  }
+
+  console.log(`  ✓ Berhasil menyinkronkan ${count} rilis episode terbaru.`);
+}
+
+/**
  * Jalankan proses sinkronisasi
  */
 async function main() {
@@ -233,23 +280,27 @@ async function main() {
   // 2. Scrape Jadwal
   await scrapeSchedule();
 
-  // 3. Lengkapi detail untuk beberapa series pertama
-  const detailLimit = Math.min(allSeries.length, 15);
-  console.log(`\n  📥 Mengambil detail & episode untuk ${detailLimit} anime pertama...`);
+  // 3. Scrape Rilis Episode Terbaru (Untuk section Fresh di Home)
+  await scrapeLatestReleases();
+
+  // 4. Lengkapi detail & daftar episode per series
+  const detailLimit = Math.min(allSeries.length, 25);
+  console.log(`\n  📥 Mengambil detail & episode lengkap untuk ${detailLimit} anime...`);
   for (let i = 0; i < detailLimit; i++) {
     const s = allSeries[i];
     process.stdout.write(`    [${i + 1}/${detailLimit}] ${s.title.slice(0, 35)}... `);
     try {
-      await scrapeSeriesPage(s.url, s.id);
-      console.log('✓');
+      const res = await scrapeSeriesPage(s.url, s.id);
+      const epCount = res && res.episodes ? res.episodes.length : 0;
+      console.log(`✓ (${epCount} episode tersimpan)`);
     } catch (e) {
-      console.log('✗');
+      console.log('✗', e.message);
     }
   }
 
   console.log(`\n  ═══════════════════════════════════════════════`);
-  console.log(`  ✓ Selesai! Data anime berhasil ditarik ke database.`);
-  console.log(`  Buka API kamu: https://apinime.vercel.app/api/v1/home\n`);
+  console.log(`  ✓ Selesai! Seluruh data anime & episode berhasil ditarik.`);
+  console.log(`  Buka API kamu: https://apinime-omega.vercel.app/api/v1/home\n`);
   process.exit(0);
 }
 

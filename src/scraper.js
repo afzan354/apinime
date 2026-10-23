@@ -363,30 +363,37 @@ async function scrapeSeriesPage(url, forceSlug = null) {
 
     // Simpan genres
     for (const gName of genres) {
-      await query('INSERT IGNORE INTO genres (name) VALUES (?)', [gName]);
-      const gRow = await query('SELECT id FROM genres WHERE name = ? LIMIT 1', [gName]);
-      if (gRow && gRow.length > 0) {
-        await query(
-          'INSERT IGNORE INTO series_genres (series_id, genre_id) VALUES (?, ?)',
-          [slug, gRow[0].id]
-        );
+      try {
+        await query('INSERT IGNORE INTO genres (name) VALUES (?)', [gName]);
+        const gRow = await query('SELECT id FROM genres WHERE name = ? LIMIT 1', [gName]);
+        if (gRow && gRow.length > 0) {
+          await query(
+            'INSERT IGNORE INTO series_genres (series_id, genre_id) VALUES (?, ?)',
+            [slug, gRow[0].id]
+          );
+        }
+      } catch (gErr) {
+        // Abaikan error genre agar episode tetap tersimpan
       }
     }
 
     // Simpan episodes
     for (const ep of episodes) {
-      await query(
-        `INSERT INTO episodes (series_id, n, title, released_at, source_url)
-         VALUES (?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE
-            title = VALUES(title),
-            released_at = COALESCE(VALUES(released_at), released_at),
-            source_url = VALUES(source_url)`,
-        [slug, ep.n, ep.title, ep.released_at, ep.source_url]
-      );
+      try {
+        await query(
+          `INSERT INTO episodes (series_id, n, title, released_at, source_url)
+           VALUES (?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE
+              title = VALUES(title),
+              released_at = COALESCE(VALUES(released_at), released_at),
+              source_url = VALUES(source_url)`,
+          [slug, ep.n, ep.title, ep.released_at, ep.source_url]
+        );
+      } catch (epErr) {
+        console.warn(`    ✗ Gagal simpan episode ${ep.n}:`, epErr.message);
+      }
     }
   } catch (dbErr) {
-    // Database mungkin belum siap, tidak apa-apa kembalikan parsed object
     console.warn('[Scraper DB Sync Warning]', dbErr.message);
   }
 

@@ -45,7 +45,7 @@ function getPool() {
       queueLimit: 0,
       enableKeepAlive: true,
       keepAliveInitialDelay: 10000,
-      charset: 'utf8mb4',
+      charset: 'UTF8MB4_UNICODE_CI',
     };
 
     if (useSsl) {
