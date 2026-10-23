@@ -6,6 +6,9 @@ on:
     - cron: '0 23 * * *'
     - cron: '0 11 * * *'
   workflow_dispatch: # Bisa dijalankan manual kapan saja lewat tombol "Run workflow" di GitHub dari HP
+  push:
+    branches:
+      - main
 
 jobs:
   sync:

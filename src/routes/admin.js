@@ -17,6 +17,42 @@ const { parseAndSaveSeriesHtml, parseStreamFromHtml } = require('../scraper');
 router.use(express.json({ limit: '10mb' }));
 router.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+// ─── API: Diagnostic Outbound Fetch ───────────────────────────────
+router.get('/api/test-fetch', async (req, res) => {
+  const testUrl = req.query.url || 'https://anichin.moe/swallowed-star-episode-201-subtitle-indonesia/';
+  const proxyUrl = process.env.PROXY_URL || process.env.CLOUDFLARE_WORKER_URL;
+  const cleanProxy = proxyUrl ? proxyUrl.replace(/\/+$/, '') : null;
+  const target = cleanProxy ? `${cleanProxy}/?url=${encodeURIComponent(testUrl)}` : testUrl;
+
+  try {
+    const axios = require('axios');
+    const start = Date.now();
+    const resp = await axios.get(target, {
+      timeout: 9000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      },
+      validateStatus: () => true,
+    });
+    return res.json({
+      target,
+      status: resp.status,
+      durationMs: Date.now() - start,
+      dataLength: (resp.data || '').length,
+      headers: resp.headers,
+      snippet: String(resp.data || '').slice(0, 400),
+    });
+  } catch (err) {
+    return res.json({
+      target,
+      error: err.message,
+      code: err.code,
+      responseStatus: err.response?.status,
+      responseData: String(err.response?.data || '').slice(0, 400),
+    });
+  }
+});
+
 // ─── API: Ambil Statistik Terkini ──────────────────────────────────
 router.get('/api/stats', async (req, res) => {
   try {
