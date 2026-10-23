@@ -13,6 +13,10 @@ const { query } = require('../db');
 const { getSourceBaseUrl } = require('../helpers');
 const { parseAndSaveSeriesHtml, parseStreamFromHtml } = require('../scraper');
 
+// Body parser khusus route admin hingga 10MB
+router.use(express.json({ limit: '10mb' }));
+router.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
 // ─── API: Ambil Statistik Terkini ──────────────────────────────────
 router.get('/api/stats', async (req, res) => {
   try {
@@ -46,11 +50,11 @@ router.get('/api/missing-streams', async (req, res) => {
       FROM episodes e
       LEFT JOIN episode_streams es ON e.id = es.episode_id AND es.expires_at > NOW()
       WHERE es.id IS NULL AND e.source_url IS NOT NULL AND e.source_url != ''
-      ORDER BY e.released_at DESC, e.id DESC
-      LIMIT ?
-    `, [limit]);
+      ORDER BY e.id DESC
+      LIMIT ${limit}
+    `);
 
-    return res.json({ ok: true, items: rows });
+    return res.json({ ok: true, items: rows || [] });
   } catch (err) {
     return res.status(500).json({ ok: false, error: err.message });
   }
@@ -83,7 +87,7 @@ router.post('/api/ingest-series', async (req, res) => {
 
 // ─── API: Ingest Halaman Episode Stream (Dikirim oleh Browser) ──────
 router.post('/api/ingest-stream', async (req, res) => {
-  const { episode_id, series_id, n, html } = req.body;
+  const { episode_id, series_id, n, html, source_url } = req.body;
   if (!html) {
     return res.status(400).json({ ok: false, error: 'HTML episode stream wajib dikirim!' });
   }
@@ -94,14 +98,35 @@ router.post('/api/ingest-stream', async (req, res) => {
       return res.status(422).json({ ok: false, error: 'Tidak ditemukan video iframe di dalam HTML.' });
     }
 
-    // Cari episode_id jika belum diberikan
     let targetEpId = episode_id;
+
+    // Jika episode_id belum ada, cari berdasarkan series_id dan nomor episode
     if (!targetEpId && series_id && n) {
       const epRows = await query(
         'SELECT id FROM episodes WHERE series_id = ? AND n = ? LIMIT 1',
         [series_id, parseInt(n, 10)]
       );
       if (epRows.length > 0) targetEpId = epRows[0].id;
+    }
+
+    // Jika belum ada di tabel episodes, insert episode baru
+    if (!targetEpId && series_id && n) {
+      try {
+        const ins = await query(
+          `INSERT INTO episodes (series_id, n, title, source_url)
+           VALUES (?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE source_url = COALESCE(VALUES(source_url), source_url)`,
+          [series_id, parseInt(n, 10), `Episode ${n}`, source_url || '']
+        );
+        targetEpId = ins.insertId;
+      } catch (insErr) {
+        // fallback query lagi
+        const epRows2 = await query(
+          'SELECT id FROM episodes WHERE series_id = ? AND n = ? LIMIT 1',
+          [series_id, parseInt(n, 10)]
+        );
+        if (epRows2.length > 0) targetEpId = epRows2[0].id;
+      }
     }
 
     if (targetEpId) {
@@ -482,34 +507,53 @@ router.get('/', (req, res) => {
       </div>
     </div>
 
-    <!-- Section 1: Update 1 Judul Tertentu -->
+    <!-- Section 1: Update 1 Judul Tertentu (Series) -->
     <div class="card">
       <div class="card-title">
         <span>🎯</span>
-        <span>Update 1 Anime Tertentu</span>
+        <span>Update 1 Anime Tertentu (Katalog & Episode)</span>
         <span class="badge-client">Direct Connection</span>
       </div>
       <div class="input-group">
-        <input type="text" id="series-slug" placeholder="Ketik slug (contoh: spare-me-great-lord-season-3)" />
+        <input type="text" id="series-slug" placeholder="Ketik slug (contoh: swallowed-star)" />
         <button id="btn-sync-series" onclick="syncSeriesClient()">
           <span>🔄</span>
           <span>Update Series</span>
         </button>
       </div>
       <div class="chips">
-        <span class="chip" onclick="setSlug('spare-me-great-lord-season-3')">spare-me-great-lord-s3</span>
         <span class="chip" onclick="setSlug('swallowed-star')">swallowed-star</span>
+        <span class="chip" onclick="setSlug('spare-me-great-lord-season-3')">spare-me-great-lord-s3</span>
         <span class="chip" onclick="setSlug('soul-land-2-the-unrivaled-tang-sect')">soul-land-2</span>
         <span class="chip" onclick="setSlug('perfect-world')">perfect-world</span>
         <span class="chip" onclick="setSlug('link-click-season-3')">link-click-season-3</span>
       </div>
     </div>
 
-    <!-- Section 2: Quick Sync Buttons -->
+    <!-- Section 2: Tarik 1 Link Episode Video Langsung -->
+    <div class="card">
+      <div class="card-title">
+        <span>🎬</span>
+        <span>Tarik 1 Link Episode Streaming Video</span>
+      </div>
+      <div class="input-group">
+        <input type="text" id="episode-url" placeholder="Paste link episode (contoh: https://anichin.moe/swallowed-star-episode-200-subtitle-indonesia/)" />
+        <button id="btn-sync-single-ep" class="btn-accent" onclick="syncSingleEpisodeUrl()">
+          <span>⚡</span>
+          <span>Ambil Video</span>
+        </button>
+      </div>
+      <div class="chips">
+        <span class="chip" onclick="setEpisodeUrl('https://anichin.moe/swallowed-star-episode-200-subtitle-indonesia/')">swallowed-star Ep 200</span>
+        <span class="chip" onclick="setEpisodeUrl('https://anichin.moe/spare-me-great-lord-season-3-episode-01-subtitle-indonesia/')">spare-me Ep 01</span>
+      </div>
+    </div>
+
+    <!-- Section 3: Quick Batch Sync Buttons -->
     <div class="card">
       <div class="card-title">
         <span>⚡</span>
-        <span>Aksi Cepat Streaming Video</span>
+        <span>Aksi Cepat Otomatis</span>
       </div>
       <div class="btn-grid">
         <button class="btn-accent" id="btn-fill-streams" onclick="fillMissingStreamsClient()">
@@ -523,7 +567,7 @@ router.get('/', (req, res) => {
       </div>
     </div>
 
-    <!-- Section 3: Live Output Terminal -->
+    <!-- Section 4: Live Output Terminal -->
     <div class="card">
       <div class="console-header">
         <span class="console-title">Live Progress Log</span>
@@ -560,6 +604,10 @@ router.get('/', (req, res) => {
       document.getElementById('series-slug').value = val;
     }
 
+    function setEpisodeUrl(val) {
+      document.getElementById('episode-url').value = val;
+    }
+
     // Ambil statistik awal
     async function loadStats() {
       try {
@@ -588,10 +636,10 @@ router.get('/', (req, res) => {
       return await res.text();
     }
 
-    // Update 1 Series (Client-Assisted: bypass Cloudflare WAF lewat IP HP)
+    // Update 1 Series (Client-Assisted)
     async function syncSeriesClient() {
       const input = document.getElementById('series-slug');
-      const slug = input.value.trim();
+      let slug = input.value.trim().replace(/^https?:\\/\\/[^\\/]+\\//i, '').replace(/\\/+$/, '');
       if (!slug) {
         alert('Masukkan slug anime terlebih dahulu!');
         return;
@@ -600,12 +648,12 @@ router.get('/', (req, res) => {
       const btn = document.getElementById('btn-sync-series');
       btn.disabled = true;
       btn.innerHTML = '<span>⏳</span><span>Mengambil data...</span>';
-      log('📱 Mengambil data "' + slug + '" lewat koneksi HP...', 'info');
+      log('📱 Mengambil data "' + slug + '" lewat koneksi kamu...', 'info');
 
       try {
         const targetUrl = 'https://anichin.moe/' + slug + '/';
         const html = await fetchViaWorker(targetUrl);
-        log('✓ Berhasil mengambil HTML (' + Math.round(html.length / 1024) + ' KB)! Mengirim ke TiDB Cloud...', 'info');
+        log('✓ Berhasil mengambil HTML (' + Math.round(html.length / 1024) + ' KB)! Menyimpan ke TiDB Cloud...', 'info');
 
         // Kirim HTML ke backend Vercel untuk di-parse & disimpan
         const ingestRes = await fetch('/admin/api/ingest-series', {
@@ -613,9 +661,15 @@ router.get('/', (req, res) => {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ slug, html, url: targetUrl }),
         });
-        const saved = await ingestRes.json();
+        
+        let saved = null;
+        try {
+          saved = await ingestRes.json();
+        } catch(pe) {
+          throw new Error('Server response error (status ' + ingestRes.status + ')');
+        }
 
-        if (saved.ok) {
+        if (saved && saved.ok) {
           log('✓ Sukses! Series "' + saved.title + '" tersimpan dengan ' + saved.episode_count + ' episode.', 'success');
 
           // Auto-resolve episode terbaru jika ada
@@ -627,10 +681,10 @@ router.get('/', (req, res) => {
               const stRes = await fetch('/admin/api/ingest-stream', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ series_id: slug, n: ep.n, html: epHtml }),
+                body: JSON.stringify({ series_id: slug, n: ep.n, html: epHtml, source_url: ep.source_url }),
               });
               const stData = await stRes.json();
-              if (stData.ok) {
+              if (stData && stData.ok) {
                 log('✓ Streaming Ep ' + ep.n + ' berhasil tersimpan (' + stData.mirrors + ' mirrors: ' + stData.provider + ')!', 'success');
               }
             } catch (epErr) {
@@ -638,15 +692,65 @@ router.get('/', (req, res) => {
             }
           }
         } else {
-          log('✗ Gagal simpan series: ' + (saved.error || 'Unknown error'), 'error');
+          const errMsg = saved && saved.error ? (typeof saved.error === 'object' ? JSON.stringify(saved.error) : saved.error) : 'Unknown error';
+          log('✗ Gagal simpan series: ' + errMsg, 'error');
         }
 
         await loadStats();
       } catch (err) {
-        log('✗ Gagal ambil halaman: ' + err.message, 'error');
+        log('✗ Error: ' + err.message, 'error');
       } finally {
         btn.disabled = false;
         btn.innerHTML = '<span>🔄</span><span>Update Series</span>';
+      }
+    }
+
+    // Tarik 1 Link Episode Video Langsung dari URL Anichin
+    async function syncSingleEpisodeUrl() {
+      const input = document.getElementById('episode-url');
+      const url = input.value.trim();
+      if (!url) {
+        alert('Masukkan link episode Anichin terlebih dahulu!');
+        return;
+      }
+
+      // Deteksi series_id dan n dari URL jika memungkinkan
+      // contoh: https://anichin.moe/swallowed-star-episode-200-subtitle-indonesia/
+      const match = url.match(/anichin\.moe\\/([a-z0-9-]+?)-episode-(\\d+)/i);
+      const series_id = match ? match[1] : null;
+      const n = match ? parseInt(match[2], 10) : null;
+
+      const btn = document.getElementById('btn-sync-single-ep');
+      btn.disabled = true;
+      btn.innerHTML = '<span>⏳</span><span>Mengambil...</span>';
+      log('📱 Mengambil streaming episode dari: ' + url + '...', 'info');
+
+      try {
+        const html = await fetchViaWorker(url);
+        log('✓ Halaman episode berhasil ditarik (' + Math.round(html.length / 1024) + ' KB)! Mengurai iframe video...', 'info');
+
+        const res = await fetch('/admin/api/ingest-stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ series_id, n, html, source_url: url }),
+        });
+        const data = await res.json();
+
+        if (data && data.ok) {
+          log('✓ SUKSES! Video ' + (series_id || '') + ' Ep ' + (n || '') + ' berhasil disimpan (' + data.mirrors + ' mirrors: ' + data.provider + ')!', 'success');
+          if (series_id && n) {
+            log('👉 Link test play: https://apinime-omega.vercel.app/api/v1/series/' + series_id + '/episodes/' + n + '/play', 'success');
+          }
+        } else {
+          const msg = data && data.error ? (typeof data.error === 'object' ? JSON.stringify(data.error) : data.error) : 'Gagal ekstraksi iframe';
+          log('✗ Gagal ekstraksi video: ' + msg, 'error');
+        }
+        await loadStats();
+      } catch (e) {
+        log('✗ Gagal: ' + e.message, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<span>⚡</span><span>Ambil Video</span>';
       }
     }
 
@@ -655,17 +759,22 @@ router.get('/', (req, res) => {
       const btn = document.getElementById('btn-fill-streams');
       btn.disabled = true;
       btn.innerHTML = '<span>⏳</span><span>Memproses...</span>';
-      log('🔍 Mencari daftar episode yang belum memiliki link video...', 'info');
+      log('🔍 Mencari daftar episode yang belum memiliki link video di TiDB...', 'info');
 
       try {
         const res = await fetch('/admin/api/missing-streams?limit=5');
         const data = await res.json();
-        if (!data.ok || !data.items || !data.items.length) {
-          log('Semua episode sudah memiliki link video aktif!', 'success');
+        if (!data.ok) {
+          log('✗ Error query database: ' + (data.error || 'Server error'), 'error');
           return;
         }
 
-        log('Ditemukan ' + data.items.length + ' episode yang siap diisi. Memulai...', 'info');
+        if (!data.items || !data.items.length) {
+          log('Semua episode dalam antrean sudah memiliki link video aktif!', 'success');
+          return;
+        }
+
+        log('Ditemukan ' + data.items.length + ' episode yang siap diisi. Memulai proses...', 'info');
 
         for (let i = 0; i < data.items.length; i++) {
           const ep = data.items[i];
@@ -675,10 +784,10 @@ router.get('/', (req, res) => {
             const stRes = await fetch('/admin/api/ingest-stream', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ episode_id: ep.id, series_id: ep.series_id, n: ep.n, html: epHtml }),
+              body: JSON.stringify({ episode_id: ep.id, series_id: ep.series_id, n: ep.n, html: epHtml, source_url: ep.source_url }),
             });
             const stData = await stRes.json();
-            if (stData.ok) {
+            if (stData && stData.ok) {
               log('  ✓ ' + ep.series_id + ' Ep ' + ep.n + ' tersimpan (' + stData.mirrors + ' mirrors)!', 'success');
             } else {
               log('  ✗ ' + ep.series_id + ' Ep ' + ep.n + ': ' + (stData.error || 'Video tidak ditemukan'), 'warning');
