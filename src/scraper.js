@@ -31,32 +31,44 @@ const PROVIDER_MAP = {
 };
 
 /**
- * Fetch HTML via Axios
+ * Fetch HTML via Axios (Mendukung Cloudflare Worker Proxy jika disetel di PROXY_URL)
  */
-async function fetchHtml(url, timeoutMs = 5000) {
+async function fetchHtml(url, timeoutMs = 8000) {
+  const proxyUrl = process.env.PROXY_URL || process.env.CLOUDFLARE_WORKER_URL;
+  let target = url;
+  const headers = {
+    'User-Agent': DEFAULT_USER_AGENT,
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
+  };
+
+  // Jika Cloudflare Worker Proxy disetel di environment Vercel
+  if (proxyUrl) {
+    const cleanProxy = proxyUrl.replace(/\/+$/, '');
+    target = `${cleanProxy}/?url=${encodeURIComponent(url)}`;
+    if (process.env.PROXY_SECRET) {
+      headers['X-Proxy-Secret'] = process.env.PROXY_SECRET;
+    }
+  }
+
   try {
-    const res = await axios.get(url, {
+    const res = await axios.get(target, {
       timeout: timeoutMs,
-      headers: {
-        'User-Agent': DEFAULT_USER_AGENT,
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
-      },
+      headers,
       maxRedirects: 5,
       validateStatus: (status) => status < 400,
     });
     return res.data;
   } catch (err) {
-    console.warn(`[fetchHtml Failed] ${url}:`, err.message);
+    console.warn(`[fetchHtml Failed] ${url} (via ${proxyUrl ? 'Proxy' : 'Direct'}):`, err.message);
     return null;
   }
 }
 
 /**
  * Scrape episode video stream & mirrors (for POST /play)
- * Strict timeout (4 seconds) according to rules.md §2.4
  */
-async function scrapeEpisodeStream(episodeSourceUrl, timeoutMs = 4000) {
+async function scrapeEpisodeStream(episodeSourceUrl, timeoutMs = 8000) {
   const html = await fetchHtml(episodeSourceUrl, timeoutMs);
   if (!html) return null;
 
