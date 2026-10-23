@@ -12,28 +12,8 @@ const { checkDb } = require('../db');
 const { jsonResponse, getSourceBaseUrl } = require('../helpers');
 
 router.get('/', async (req, res) => {
-  const t0 = Date.now();
-  let upstreamOk = false;
-  let latencyMs = 0;
-
-  try {
-    const upstreamUrl = getSourceBaseUrl();
-    const upRes = await axios.get(upstreamUrl, {
-      timeout: 2000,
-      headers: {
-        'User-Agent':
-          process.env.SCRAPER_USER_AGENT ||
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      },
-      validateStatus: () => true,
-    });
-
-    latencyMs = Date.now() - t0;
-    upstreamOk = upRes.status > 0 && upRes.status < 500;
-  } catch (err) {
-    latencyMs = Date.now() - t0;
-    upstreamOk = false;
-  }
+  const dbOk = await checkDb();
+  const proxyConfigured = !!(process.env.PROXY_URL || process.env.CLOUDFLARE_WORKER_URL);
 
   let debugTest = null;
   if (req.query.test_url) {
@@ -62,20 +42,12 @@ router.get('/', async (req, res) => {
     }
   }
 
-  const proxyConfigured = !!(process.env.PROXY_URL || process.env.CLOUDFLARE_WORKER_URL);
-
   return jsonResponse(
     res,
     {
       ok: dbOk,
       proxy_configured: proxyConfigured,
-      upstreams: [
-        {
-          name: 'anichin',
-          ok: upstreamOk,
-          latency_ms: latencyMs,
-        },
-      ],
+      database: dbOk ? 'connected' : 'disconnected',
       version: '1.0.0',
       debug: debugTest,
     },

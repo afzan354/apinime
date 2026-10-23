@@ -26,12 +26,17 @@ let streamsOnly = false;
 let streamsLimit = 50;
 let filterSeries = null;
 
+let fillEpisodes = false;
+
 for (const arg of args) {
   if (arg.startsWith('--pages=')) {
     maxPages = Math.max(1, parseInt(arg.split('=')[1], 10) || 1);
   }
   if (arg === '--schedule') {
     scheduleOnly = true;
+  }
+  if (arg === '--fill-episodes' || arg === '--fill') {
+    fillEpisodes = true;
   }
   if (arg.startsWith('--series=')) {
     filterSeries = arg.split('=')[1].trim();
@@ -320,6 +325,34 @@ async function main() {
     process.exit(1);
   }
   console.log('  ✓ Koneksi database terhubung dengan sukses!\n');
+
+  if (fillEpisodes) {
+    console.log('\n  🔍 Mencari judul anime/donghua yang episodenya masih kosong...');
+    const emptySeries = await query(`
+      SELECT s.id, s.title, s.source_url
+      FROM series s
+      LEFT JOIN episodes e ON s.id = e.series_id
+      GROUP BY s.id
+      HAVING COUNT(e.id) = 0
+      ORDER BY s.updated_at DESC
+    `);
+    console.log(`  Ditemukan ${emptySeries.length} judul anime yang belum memiliki episode.\n`);
+
+    for (let i = 0; i < emptySeries.length; i++) {
+      const s = emptySeries[i];
+      process.stdout.write(`    [${i + 1}/${emptySeries.length}] ${s.title.slice(0, 35)} (${s.id})... `);
+      try {
+        const detailUrl = s.source_url || `${getSourceBaseUrl()}/${s.id}/`;
+        const res = await scrapeSeriesPage(detailUrl, s.id);
+        const count = res && res.episodes ? res.episodes.length : 0;
+        console.log(`✓ (${count} episode tersimpan)`);
+      } catch (err) {
+        console.log('✗', err.message);
+      }
+    }
+    console.log('\n  ✓ Semua judul anime yang kosong telah berhasil dilengkapi episodenya!');
+    process.exit(0);
+  }
 
   if (streamsOnly || filterSeries) {
     await syncStreamsForEpisodes(streamsLimit, filterSeries);
