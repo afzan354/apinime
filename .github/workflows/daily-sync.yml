@@ -1,0 +1,37 @@
+name: Daily Donghua Auto-Sync
+
+on:
+  schedule:
+    # Berjalan otomatis 2x sehari: jam 06:00 WIB (23:00 UTC) dan 18:00 WIB (11:00 UTC)
+    - cron: '0 23 * * *'
+    - cron: '0 11 * * *'
+  workflow_dispatch: # Bisa dijalankan manual kapan saja lewat tombol "Run workflow" di GitHub dari HP
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Run Auto-Sync Donghua & Streaming
+        env:
+          DB_HOST: ${{ secrets.DB_HOST || 'gateway01.ap-northeast-1.prod.aws.tidbcloud.com' }}
+          DB_PORT: ${{ secrets.DB_PORT || '4000' }}
+          DB_USER: ${{ secrets.DB_USER || 'RqXM8h9rre8C7KJ.root' }}
+          DB_PASS: ${{ secrets.DB_PASS || 'gdDMGQiLgtpS5KUa' }}
+          DB_NAME: ${{ secrets.DB_NAME || 'anichin_api' }}
+          DB_SSL: 'true'
+          SOURCE_BASE_URL: 'https://anichin.moe'
+        run: |
+          node sync.js --schedule
+          node sync.js --fill-episodes
+          node sync.js --streams=30
