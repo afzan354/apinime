@@ -24,6 +24,7 @@ let maxPages = 1;
 let scheduleOnly = false;
 let streamsOnly = false;
 let streamsLimit = 50;
+let filterSeries = null;
 
 for (const arg of args) {
   if (arg.startsWith('--pages=')) {
@@ -31,6 +32,9 @@ for (const arg of args) {
   }
   if (arg === '--schedule') {
     scheduleOnly = true;
+  }
+  if (arg.startsWith('--series=')) {
+    filterSeries = arg.split('=')[1].trim();
   }
   if (arg.startsWith('--streams')) {
     streamsOnly = true;
@@ -258,15 +262,16 @@ async function scrapeLatestReleases() {
 /**
  * Pre-resolve link streaming video (episode_streams) ke database TiDB Cloud
  */
-async function syncStreamsForEpisodes(limit = 40) {
+async function syncStreamsForEpisodes(limit = 40, seriesId = null) {
   const safeLimit = Math.max(1, parseInt(limit, 10) || 40);
-  console.log(`\n  🎬 Menyinkronkan link streaming video (episode_streams)...`);
+  console.log(`\n  🎬 Menyinkronkan link streaming video (episode_streams)${seriesId ? ` untuk series '${seriesId}'` : ''}...`);
+  const whereSeries = seriesId ? `AND e.series_id = '${seriesId}'` : '';
   const episodesToResolve = await query(
     `SELECT e.id, e.series_id, e.n, e.source_url
      FROM episodes e
      LEFT JOIN episode_streams es ON e.id = es.episode_id AND es.expires_at > NOW()
-     WHERE es.id IS NULL AND e.source_url IS NOT NULL AND e.source_url != ''
-     ORDER BY e.released_at DESC, e.id DESC
+     WHERE es.id IS NULL AND e.source_url IS NOT NULL AND e.source_url != '' ${whereSeries}
+     ORDER BY e.n ASC
      LIMIT ${safeLimit}`
   );
 
@@ -316,8 +321,8 @@ async function main() {
   }
   console.log('  ✓ Koneksi database terhubung dengan sukses!\n');
 
-  if (streamsOnly) {
-    await syncStreamsForEpisodes(streamsLimit);
+  if (streamsOnly || filterSeries) {
+    await syncStreamsForEpisodes(streamsLimit, filterSeries);
     console.log('\n  ✓ Sinkronisasi streaming video selesai!');
     process.exit(0);
   }
