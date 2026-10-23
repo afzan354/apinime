@@ -222,8 +222,10 @@ router.get('/:id/episodes', async (req, res, next) => {
       console.warn('[Episodes:query]', e.message);
     }
 
-    // Jika episode kosong, coba scrape on-demand
-    if (!episodes.length) {
+    const forceRefresh = req.query.refresh === '1' || req.query.force === 'true' || req.query.fresh === '1';
+
+    // Jika episode kosong atau diminta refresh paksa, coba scrape on-demand
+    if (!episodes.length || forceRefresh) {
       let detailUrl = `${getSourceBaseUrl()}/${id}/`;
       try {
         const sRows = await query('SELECT source_url FROM series WHERE id = ? LIMIT 1', [id]);
@@ -234,7 +236,7 @@ router.get('/:id/episodes', async (req, res, next) => {
 
       const scraped = await scrapeSeriesPage(detailUrl, id);
 
-      if (scraped && scraped.episodes) {
+      if (scraped && scraped.episodes && scraped.episodes.length > 0) {
         episodes = scraped.episodes.map((e) => formatEpisode(e));
       }
     }
@@ -250,9 +252,9 @@ router.get('/:id/episodes', async (req, res, next) => {
     }
 
     const dynamicCacheHeader =
-      episodes.length > 0
-        ? 'public, max-age=300, stale-while-revalidate=600'
-        : 'no-store, no-cache, must-revalidate';
+      forceRefresh || episodes.length === 0
+        ? 'no-store, no-cache, must-revalidate'
+        : 'public, max-age=300, stale-while-revalidate=600';
 
     return jsonResponse(
       res,

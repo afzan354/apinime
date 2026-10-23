@@ -188,14 +188,21 @@ async function scrapeEpisodeStream(episodeSourceUrl, timeoutMs = 8000) {
  */
 async function scrapeSeriesPage(url, forceSlug = null) {
   let finalUrl = makeAbsolute(url);
-  let html = await fetchHtml(finalUrl, 6000);
+  let html = await fetchHtml(finalUrl, 9000);
 
-  // Fallback coba prefix /anime/ jika 404
+  // Fallback coba variasi URL anichin (dengan atau tanpa prefix /anime/) jika belum berhasil
   if (!html && forceSlug) {
-    const altUrl = `${getSourceBaseUrl()}/anime/${forceSlug}/`;
-    if (altUrl !== finalUrl) {
-      html = await fetchHtml(altUrl, 6000);
-      if (html) finalUrl = altUrl;
+    const candidates = [
+      `${getSourceBaseUrl()}/${forceSlug}/`,
+      `${getSourceBaseUrl()}/anime/${forceSlug}/`,
+    ].filter((u) => u !== finalUrl);
+
+    for (const altUrl of candidates) {
+      html = await fetchHtml(altUrl, 9000);
+      if (html) {
+        finalUrl = altUrl;
+        break;
+      }
     }
   }
 

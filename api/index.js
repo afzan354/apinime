@@ -25,6 +25,7 @@ const searchRoute = require('../src/routes/search');
 const genresRoute = require('../src/routes/genres');
 const progressRoute = require('../src/routes/progress');
 const healthRoute = require('../src/routes/health');
+const cronRoute = require('../src/routes/cron');
 
 const app = express();
 
@@ -79,6 +80,7 @@ apiRouter.use('/search', searchRoute);
 apiRouter.use('/genres', genresRoute);
 apiRouter.use('/me/progress', progressRoute);
 apiRouter.use('/health', healthRoute);
+apiRouter.use('/cron', cronRoute);
 
 // Pasang router ke beberapa alias prefix
 app.use('/api/v1', apiRouter);
