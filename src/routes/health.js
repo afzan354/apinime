@@ -35,6 +35,33 @@ router.get('/', async (req, res) => {
     upstreamOk = false;
   }
 
+  let debugTest = null;
+  if (req.query.test_url) {
+    try {
+      const target = String(req.query.test_url);
+      const testRes = await axios.get(target, {
+        timeout: 8000,
+        headers: {
+          'User-Agent':
+            process.env.SCRAPER_USER_AGENT ||
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+        validateStatus: () => true,
+      });
+      debugTest = {
+        url: target,
+        status: testRes.status,
+        hasIframes: testRes.data.includes('<iframe'),
+        dataLength: testRes.data ? testRes.data.length : 0,
+        server: testRes.headers['server'],
+        title: (testRes.data.match(/<title>(.*?)<\/title>/i) || [])[1],
+      };
+    } catch (testErr) {
+      debugTest = { error: testErr.message };
+    }
+  }
+
   const dbOk = await checkDb();
 
   return jsonResponse(
@@ -49,6 +76,7 @@ router.get('/', async (req, res) => {
         },
       ],
       version: '1.0.0',
+      debug: debugTest,
     },
     200,
     'no-store'
