@@ -373,36 +373,52 @@ async function parseAndSaveSeriesHtml(html, forceSlug = null, explicitUrl = null
       ]
     );
 
-    // Simpan genres
-    for (const gName of genres) {
+    // Simpan genres (Batch)
+    if (genres.length > 0) {
       try {
-        await query('INSERT IGNORE INTO genres (name) VALUES (?)', [gName]);
-        const gRow = await query('SELECT id FROM genres WHERE name = ? LIMIT 1', [gName]);
-        if (gRow && gRow.length > 0) {
-          await query(
-            'INSERT IGNORE INTO series_genres (series_id, genre_id) VALUES (?, ?)',
-            [slug, gRow[0].id]
-          );
+        const gPlaceholders = genres.map(() => '(?)').join(', ');
+        await query(`INSERT IGNORE INTO genres (name) VALUES ${gPlaceholders}`, genres);
+        const inPlaceholders = genres.map(() => '?').join(', ');
+        const gRows = await query(`SELECT id FROM genres WHERE name IN (${inPlaceholders})`, genres);
+        if (gRows && gRows.length > 0) {
+          const sgValues = [];
+          const sgPlaceholders = gRows.map((r) => {
+            sgValues.push(slug, r.id);
+            return '(?, ?)';
+          }).join(', ');
+          await query(`INSERT IGNORE INTO series_genres (series_id, genre_id) VALUES ${sgPlaceholders}`, sgValues);
         }
       } catch (gErr) {
-        // Abaikan error genre agar episode tetap tersimpan
+        console.warn('[Scraper Genre Sync]', gErr.message);
       }
     }
 
-    // Simpan episodes
-    for (const ep of episodes) {
-      try {
-        await query(
-          `INSERT INTO episodes (series_id, n, title, released_at, source_url)
-           VALUES (?, ?, ?, ?, ?)
-           ON DUPLICATE KEY UPDATE
-              title = VALUES(title),
-              released_at = COALESCE(VALUES(released_at), released_at),
-              source_url = VALUES(source_url)`,
-          [slug, ep.n, ep.title, ep.released_at, ep.source_url]
-        );
-      } catch (epErr) {
-        console.warn(`    ✗ Gagal simpan episode ${ep.n}:`, epErr.message);
+    // Simpan episodes (Batch insert 50 rows/query agar super cepat < 1 detik)
+    if (episodes.length > 0) {
+      const batchSize = 50;
+      for (let i = 0; i < episodes.length; i += batchSize) {
+        const chunk = episodes.slice(i, i + batchSize);
+        const values = [];
+        const placeholders = chunk
+          .map((ep) => {
+            values.push(slug, ep.n, ep.title, ep.released_at, ep.source_url);
+            return '(?, ?, ?, ?, ?)';
+          })
+          .join(', ');
+
+        try {
+          await query(
+            `INSERT INTO episodes (series_id, n, title, released_at, source_url)
+             VALUES ${placeholders}
+             ON DUPLICATE KEY UPDATE
+                title = VALUES(title),
+                released_at = COALESCE(VALUES(released_at), released_at),
+                source_url = VALUES(source_url)`,
+            values
+          );
+        } catch (epErr) {
+          console.warn(`    ✗ Gagal batch insert episode:`, epErr.message);
+        }
       }
     }
   } catch (dbErr) {

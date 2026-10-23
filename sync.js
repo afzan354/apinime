@@ -27,6 +27,8 @@ let streamsLimit = 50;
 let filterSeries = null;
 
 let fillEpisodes = false;
+let fromEpisode = null;
+let orderDesc = false;
 
 for (const arg of args) {
   if (arg.startsWith('--pages=')) {
@@ -40,6 +42,12 @@ for (const arg of args) {
   }
   if (arg.startsWith('--series=')) {
     filterSeries = arg.split('=')[1].trim();
+  }
+  if (arg.startsWith('--from=')) {
+    fromEpisode = parseInt(arg.split('=')[1], 10);
+  }
+  if (arg === '--desc') {
+    orderDesc = true;
   }
   if (arg.startsWith('--streams')) {
     streamsOnly = true;
@@ -267,16 +275,18 @@ async function scrapeLatestReleases() {
 /**
  * Pre-resolve link streaming video (episode_streams) ke database TiDB Cloud
  */
-async function syncStreamsForEpisodes(limit = 40, seriesId = null) {
+async function syncStreamsForEpisodes(limit = 40, seriesId = null, fromEp = null, isDesc = false) {
   const safeLimit = Math.max(1, parseInt(limit, 10) || 40);
-  console.log(`\n  🎬 Menyinkronkan link streaming video (episode_streams)${seriesId ? ` untuk series '${seriesId}'` : ''}...`);
+  console.log(`\n  🎬 Menyinkronkan link streaming video (episode_streams)${seriesId ? ` untuk series '${seriesId}'` : ''}${fromEp ? ` mulai Ep ${fromEp}` : ''}...`);
   const whereSeries = seriesId ? `AND e.series_id = '${seriesId}'` : '';
+  const whereFrom = fromEp ? `AND e.n >= ${fromEp}` : '';
+  const orderSQL = isDesc ? 'ORDER BY e.n DESC' : 'ORDER BY e.n ASC';
   const episodesToResolve = await query(
     `SELECT e.id, e.series_id, e.n, e.source_url
      FROM episodes e
      LEFT JOIN episode_streams es ON e.id = es.episode_id AND es.expires_at > NOW()
-     WHERE es.id IS NULL AND e.source_url IS NOT NULL AND e.source_url != '' ${whereSeries}
-     ORDER BY e.n ASC
+     WHERE es.id IS NULL AND e.source_url IS NOT NULL AND e.source_url != '' ${whereSeries} ${whereFrom}
+     ${orderSQL}
      LIMIT ${safeLimit}`
   );
 
@@ -355,7 +365,7 @@ async function main() {
   }
 
   if (streamsOnly || filterSeries) {
-    await syncStreamsForEpisodes(streamsLimit, filterSeries);
+    await syncStreamsForEpisodes(streamsLimit, filterSeries, fromEpisode, orderDesc);
     console.log('\n  ✓ Sinkronisasi streaming video selesai!');
     process.exit(0);
   }
