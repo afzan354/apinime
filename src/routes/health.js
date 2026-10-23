@@ -18,14 +18,14 @@ router.get('/', async (req, res) => {
 
   try {
     const upstreamUrl = getSourceBaseUrl();
-    const upRes = await axios.head(upstreamUrl, {
-      timeout: 5000,
+    const upRes = await axios.get(upstreamUrl, {
+      timeout: 2000,
       headers: {
         'User-Agent':
           process.env.SCRAPER_USER_AGENT ||
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
       },
-      validateStatus: () => true, // Terima status apa pun untuk ukur latensi
+      validateStatus: () => true,
     });
 
     latencyMs = Date.now() - t0;
