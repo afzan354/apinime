@@ -259,6 +259,7 @@ async function scrapeLatestReleases() {
  * Pre-resolve link streaming video (episode_streams) ke database TiDB Cloud
  */
 async function syncStreamsForEpisodes(limit = 40) {
+  const safeLimit = Math.max(1, parseInt(limit, 10) || 40);
   console.log(`\n  🎬 Menyinkronkan link streaming video (episode_streams)...`);
   const episodesToResolve = await query(
     `SELECT e.id, e.series_id, e.n, e.source_url
@@ -266,8 +267,7 @@ async function syncStreamsForEpisodes(limit = 40) {
      LEFT JOIN episode_streams es ON e.id = es.episode_id AND es.expires_at > NOW()
      WHERE es.id IS NULL AND e.source_url IS NOT NULL AND e.source_url != ''
      ORDER BY e.released_at DESC, e.id DESC
-     LIMIT ?`,
-    [limit]
+     LIMIT ${safeLimit}`
   );
 
   console.log(`  Ditemukan ${episodesToResolve.length} episode yang siap di-resolve...`);
