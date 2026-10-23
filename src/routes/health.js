@@ -62,12 +62,13 @@ router.get('/', async (req, res) => {
     }
   }
 
-  const dbOk = await checkDb();
+  const proxyConfigured = !!(process.env.PROXY_URL || process.env.CLOUDFLARE_WORKER_URL);
 
   return jsonResponse(
     res,
     {
       ok: dbOk,
+      proxy_configured: proxyConfigured,
       upstreams: [
         {
           name: 'anichin',
