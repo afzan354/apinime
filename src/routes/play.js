@@ -32,20 +32,37 @@ async function handlePlay(req, res, next) {
   try {
     // 1. Cari data episode di database
     let ep = null;
+    let actualSeriesId = seriesId;
     try {
-      const epRows = await query(
+      let epRows = await query(
         'SELECT * FROM episodes WHERE series_id = ? AND n = ? LIMIT 1',
-        [seriesId, n]
+        [actualSeriesId, n]
       );
-      if (epRows.length > 0) ep = epRows[0];
+      if (epRows.length > 0) {
+        ep = epRows[0];
+      } else {
+        // Toleransi slug jika ada gabungan judul (misal against-the-godsendless-god-realm -> against-the-gods)
+        const matched = await query(
+          'SELECT id FROM series WHERE ? LIKE CONCAT("%", id, "%") ORDER BY LENGTH(id) DESC LIMIT 1',
+          [seriesId]
+        );
+        if (matched.length > 0) {
+          actualSeriesId = matched[0].id;
+          epRows = await query(
+            'SELECT * FROM episodes WHERE series_id = ? AND n = ? LIMIT 1',
+            [actualSeriesId, n]
+          );
+          if (epRows.length > 0) ep = epRows[0];
+        }
+      }
     } catch (e) {
       console.warn('[Play:epQuery]', e.message);
     }
 
     // Jika episode belum terdaftar di DB, coba auto-scrape detail series
     if (!ep) {
-      const detailUrl = `${getSourceBaseUrl()}/${seriesId}/`;
-      const scraped = await scrapeSeriesPage(detailUrl, seriesId);
+      const detailUrl = `${getSourceBaseUrl()}/${actualSeriesId}/`;
+      const scraped = await scrapeSeriesPage(detailUrl, actualSeriesId);
 
       if (scraped && scraped.episodes) {
         const found = scraped.episodes.find((e) => e.n === n);
@@ -55,7 +72,7 @@ async function handlePlay(req, res, next) {
           try {
             const epRows = await query(
               'SELECT * FROM episodes WHERE series_id = ? AND n = ? LIMIT 1',
-              [seriesId, n]
+              [actualSeriesId, n]
             );
             if (epRows.length > 0) ep = epRows[0];
           } catch (e) {}
@@ -83,7 +100,7 @@ async function handlePlay(req, res, next) {
           return jsonResponse(
             res,
             {
-              series_id: seriesId,
+              series_id: actualSeriesId,
               episode: n,
               provider: c.provider || 'unknown',
               sources,
@@ -100,9 +117,9 @@ async function handlePlay(req, res, next) {
       }
     }
 
-    // 3. Resolve dari website anichin dengan timeout ketat 4 detik (§2.4)
-    const sourceUrl = ep.source_url || `${getSourceBaseUrl()}/${seriesId}-episode-${n}/`;
-    const streamResult = await scrapeEpisodeStream(sourceUrl, 4000);
+    // 3. Resolve dari website anichin dengan timeout 8 detik
+    const sourceUrl = ep.source_url || `${getSourceBaseUrl()}/${actualSeriesId}-episode-${n}/`;
+    const streamResult = await scrapeEpisodeStream(sourceUrl, 8000);
 
     if (!streamResult || !streamResult.embedUrl) {
       return errorResponse(
@@ -141,7 +158,7 @@ async function handlePlay(req, res, next) {
     return jsonResponse(
       res,
       {
-        series_id: seriesId,
+        series_id: actualSeriesId,
         episode: n,
         provider: streamResult.provider,
         sources: streamResult.sources,
