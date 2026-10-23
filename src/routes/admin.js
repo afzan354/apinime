@@ -593,6 +593,10 @@ router.get('/', (req, res) => {
         <span>Aksi Cepat Otomatis</span>
       </div>
       <div class="btn-grid">
+        <button class="btn-accent" id="btn-sync-today" onclick="syncTodayReleasesClient()" style="grid-column: span 2; padding: 14px; font-size: 0.92rem; background: linear-gradient(135deg, #f59e0b, #ef4444); box-shadow: 0 4px 15px rgba(245, 158, 11, 0.4);">
+          <span>🔥</span>
+          <span>Auto-Sync Rilis Donghua Terbaru Hari Ini (1-Klik dari HP)</span>
+        </button>
         <button class="btn-accent" id="btn-fill-streams" onclick="fillMissingStreamsClient()">
           <span>🎬</span>
           <span>Isi 5 Link Streaming Kosong</span>
@@ -841,6 +845,65 @@ router.get('/', (req, res) => {
       } finally {
         btn.disabled = false;
         btn.innerHTML = '<span>🎬</span><span>Isi 5 Link Streaming Kosong</span>';
+      }
+    }
+
+    // Auto-Sync Rilis Terbaru Donghua Hari Ini
+    async function syncTodayReleasesClient() {
+      const btn = document.getElementById('btn-sync-today');
+      btn.disabled = true;
+      btn.innerHTML = '<span>⏳</span><span>Mengambil rilis terbaru...</span>';
+      log('📡 Mengambil daftar rilis terbaru dari https://anichin.moe/donghua/...', 'info');
+
+      try {
+        const html = await fetchViaWorker('https://anichin.moe/donghua/');
+        log('✓ Halaman rilis terbaru didapat (' + Math.round(html.length / 1024) + ' KB)! Mengurai episode...', 'info');
+
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(html, 'text/html');
+        const cards = doc.querySelectorAll('div.bsx, article.bs, article');
+        log('Ditemukan ' + cards.length + ' episode baru di Anichin.', 'info');
+
+        let processed = 0;
+        for (let i = 0; i < Math.min(cards.length, 12); i++) {
+          const card = cards[i];
+          const a = card.querySelector('a');
+          if (!a) continue;
+          const href = a.getAttribute('href');
+          const title = a.getAttribute('title') || card.querySelector('h2, div.tt')?.textContent?.trim() || '';
+
+          const m = title.match(/^(.+?)\s+(?:Episode|Ep|Eps)\s+(\d+)/i) || (href ? href.match(/\/([a-z0-9-]+?)-episode-(\d+)/i) : null);
+          if (!m || !href) continue;
+
+          let rawSlug = m[1].toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+          const epNum = parseInt(m[2], 10);
+
+          log('[' + (i + 1) + '] Menyimpan ' + rawSlug + ' Ep ' + epNum + '...', 'info');
+
+          try {
+            const epHtml = await fetchViaWorker(href);
+            const stRes = await fetch('/admin/api/ingest-stream', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ series_id: rawSlug, n: epNum, html: epHtml, source_url: href }),
+            });
+            const stData = await stRes.json();
+            if (stData && stData.ok) {
+              log('  ✓ ' + rawSlug + ' Ep ' + epNum + ' tersimpan (' + stData.mirrors + ' mirrors)!', 'success');
+              processed++;
+            }
+          } catch (err) {
+            log('  ⚠ ' + rawSlug + ' Ep ' + epNum + ' dilewati: ' + err.message, 'warning');
+          }
+        }
+
+        log('🎉 Selesai! ' + processed + ' episode rilis hari ini berhasil disinkronkan ke TiDB Cloud!', 'success');
+        await loadStats();
+      } catch (e) {
+        log('✗ Gagal auto-sync rilis hari ini: ' + e.message, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<span>🔥</span><span>Auto-Sync Rilis Donghua Terbaru Hari Ini (1-Klik dari HP)</span>';
       }
     }
 
