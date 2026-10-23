@@ -15,16 +15,24 @@ const mysql = require('mysql2/promise');
 let pool = null;
 let isConfigured = false;
 
+function cleanEnv(val, fallback = '') {
+  if (!val) return fallback;
+  return String(val).trim().replace(/^['"]|['"]$/g, '');
+}
+
 function getPool() {
   if (!pool) {
-    const host = process.env.DB_HOST || '127.0.0.1';
-    const port = parseInt(process.env.DB_PORT || '3306', 10);
-    const user = process.env.DB_USER || 'root';
-    const password = process.env.DB_PASS || '';
-    const database = process.env.DB_NAME || 'anichin_api';
-    const useSsl = String(process.env.DB_SSL).toLowerCase() === 'true';
+    const host = cleanEnv(process.env.DB_HOST, '127.0.0.1');
+    const port = parseInt(cleanEnv(process.env.DB_PORT, '3306'), 10);
+    const user = cleanEnv(process.env.DB_USER || process.env.DB_USERNAME, 'root');
+    const password = cleanEnv(process.env.DB_PASS || process.env.DB_PASSWORD, '');
+    const database = cleanEnv(process.env.DB_NAME || process.env.DB_DATABASE, 'anichin_api');
+    
+    // Auto-detect SSL jika di TiDB Cloud, Aiven, atau jika DB_SSL=true
+    const isCloudHost = host.includes('tidbcloud.com') || host.includes('aivencloud.com');
+    const useSsl = String(process.env.DB_SSL).toLowerCase() === 'true' || isCloudHost;
 
-    isConfigured = Boolean(process.env.DB_HOST || process.env.DB_NAME);
+    isConfigured = Boolean(process.env.DB_HOST || process.env.DB_NAME || process.env.DB_DATABASE);
 
     const poolConfig = {
       host,
@@ -42,6 +50,7 @@ function getPool() {
 
     if (useSsl) {
       poolConfig.ssl = {
+        minVersion: 'TLSv1.2',
         rejectUnauthorized: false,
       };
     }
