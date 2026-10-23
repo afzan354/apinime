@@ -1,0 +1,30 @@
+{
+  "name": "anibiplay-api",
+  "version": "1.0.0",
+  "description": "AnibiPlay REST API for Mobile APK (Android) - Optimized for Vercel Serverless",
+  "main": "api/index.js",
+  "scripts": {
+    "start": "node api/index.js",
+    "dev": "node api/index.js"
+  },
+  "keywords": [
+    "anibiplay",
+    "anime",
+    "donghua",
+    "api",
+    "vercel",
+    "serverless",
+    "android",
+    "apk"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.7.9",
+    "cheerio": "^1.0.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "mysql2": "^3.12.0"
+  }
+}
