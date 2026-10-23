@@ -26,6 +26,7 @@ const genresRoute = require('../src/routes/genres');
 const progressRoute = require('../src/routes/progress');
 const healthRoute = require('../src/routes/health');
 const cronRoute = require('../src/routes/cron');
+const adminRoute = require('../src/routes/admin');
 
 const app = express();
 
@@ -81,13 +82,15 @@ apiRouter.use('/genres', genresRoute);
 apiRouter.use('/me/progress', progressRoute);
 apiRouter.use('/health', healthRoute);
 apiRouter.use('/cron', cronRoute);
+apiRouter.use('/admin', adminRoute);
 
 // Pasang router ke beberapa alias prefix
 app.use('/api/v1', apiRouter);
 app.use('/v1', apiRouter);
 app.use('/api', apiRouter);
 
-// Pasang juga langsung di root path (contoh: GET /home)
+// Pasang juga langsung di root path (contoh: GET /home, GET /admin)
+app.use('/admin', adminRoute);
 app.use('/', apiRouter);
 
 // ─── 404 Handler (§5 rules.md) ────────────────────────────────────
