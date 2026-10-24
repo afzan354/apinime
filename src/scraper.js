@@ -33,8 +33,10 @@ const PROVIDER_MAP = {
 /**
  * Fetch HTML via Axios (Mendukung Cloudflare Worker Proxy jika disetel di PROXY_URL)
  */
-async function fetchHtml(url, timeoutMs = 8000) {
-  const proxyUrl = process.env.PROXY_URL || process.env.CLOUDFLARE_WORKER_URL;
+const DEFAULT_PROXY_URL = 'https://anibli.wedussamsung6.workers.dev';
+
+async function fetchHtml(url, timeoutMs = 10000) {
+  const proxyUrl = process.env.PROXY_URL || process.env.CLOUDFLARE_WORKER_URL || DEFAULT_PROXY_URL;
   let target = url;
   const headers = {
     'User-Agent': DEFAULT_USER_AGENT,
@@ -42,7 +44,7 @@ async function fetchHtml(url, timeoutMs = 8000) {
     'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
   };
 
-  // Jika Cloudflare Worker Proxy disetel di environment Vercel
+  // Jika Cloudflare Worker Proxy disetel
   if (proxyUrl) {
     const cleanProxy = proxyUrl.replace(/\/+$/, '');
     target = `${cleanProxy}/?url=${encodeURIComponent(url)}`;
@@ -61,6 +63,19 @@ async function fetchHtml(url, timeoutMs = 8000) {
     return res.data;
   } catch (err) {
     console.warn(`[fetchHtml Failed] ${url} (via ${proxyUrl ? 'Proxy' : 'Direct'}):`, err.message);
+    if (proxyUrl && target !== url) {
+      try {
+        const directRes = await axios.get(url, {
+          timeout: 4000,
+          headers,
+          maxRedirects: 5,
+          validateStatus: (status) => status < 400,
+        });
+        return directRes.data;
+      } catch (directErr) {
+        // Abaikan
+      }
+    }
     return null;
   }
 }

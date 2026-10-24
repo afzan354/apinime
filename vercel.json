@@ -3,7 +3,8 @@
   "regions": ["sin1"],
   "functions": {
     "api/index.js": {
-      "includeFiles": "src/routes/**"
+      "includeFiles": "src/routes/**",
+      "maxDuration": 30
     }
   },
   "rewrites": [

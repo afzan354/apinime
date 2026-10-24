@@ -320,12 +320,12 @@ async function handlePlay(req, res, next) {
       }
     }
 
-    // 3. Resolve dari website anichin dengan timeout 8 detik
+    // 3. Resolve dari website anichin via proxy dengan timeout 10 detik
     const sourceUrl = ep.source_url || `${getSourceBaseUrl()}/${actualSeriesId}-episode-${n}/`;
-    const streamResult = await scrapeEpisodeStream(sourceUrl, 8000);
+    const streamResult = await scrapeEpisodeStream(sourceUrl, 10000);
 
     if (!streamResult || !streamResult.embedUrl) {
-      // Fallback: Jika upstream scraper terhalang Cloudflare 403 di serverless Vercel,
+      // Fallback: Jika upstream scraper gagal,
       // jangan gagal 503. Kembalikan URL episode langsung agar aplikasi atau browser pengguna
       // (yang IP-nya tidak diblokir Cloudflare) dapat langsung memutar video secara instan.
       return sendPlayResponse(
@@ -364,6 +364,28 @@ async function handlePlay(req, res, next) {
 
     const expiresAt = new Date(Date.now() + CACHE_PLAY * 1000);
     const expiresAtSql = expiresAt.toISOString().slice(0, 19).replace('T', ' ');
+
+    // Pastikan ep.id ada di database agar bisa dicache di episode_streams
+    if (!ep.id && actualSeriesId && n) {
+      try {
+        const titleStub = String(actualSeriesId).replace(/-/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase());
+        await query(
+          `INSERT INTO series (id, title, status, episode_count, latest_episode, updated_at)
+           VALUES (?, ?, 'Ongoing', ?, ?, NOW())
+           ON DUPLICATE KEY UPDATE updated_at = NOW()`,
+          [actualSeriesId, titleStub, n, n]
+        );
+        const ins = await query(
+          `INSERT INTO episodes (series_id, n, title, source_url)
+           VALUES (?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)`,
+          [actualSeriesId, n, `Episode ${n}`, sourceUrl]
+        );
+        if (ins && ins.insertId) ep.id = ins.insertId;
+      } catch (e) {
+        console.warn('[Play:stubCreate]', e.message);
+      }
+    }
 
     // 4. Simpan ke cache episode_streams jika DB tersedia
     if (ep.id) {
