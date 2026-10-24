@@ -122,12 +122,33 @@ async function handlePlay(req, res, next) {
     const streamResult = await scrapeEpisodeStream(sourceUrl, 8000);
 
     if (!streamResult || !streamResult.embedUrl) {
-      return errorResponse(
+      // Fallback: Jika upstream scraper terhalang Cloudflare 403 di serverless Vercel,
+      // jangan gagal 503. Kembalikan URL episode langsung agar aplikasi atau browser pengguna
+      // (yang IP-nya tidak diblokir Cloudflare) dapat langsung memutar video secara instan.
+      return jsonResponse(
         res,
-        503,
-        'upstream_failed',
-        'Sumber video tidak merespons atau sedang offline.',
-        30
+        {
+          series_id: actualSeriesId,
+          episode: n,
+          provider: 'Anichin Direct',
+          sources: [
+            {
+              label: 'Direct Web Player',
+              url: sourceUrl,
+              type: 'embed',
+              height: 720,
+            },
+          ],
+          subtitles: [
+            { lang: 'id', label: 'Indonesia', url: '', default: true },
+          ],
+          expires_at: new Date(Date.now() + CACHE_PLAY * 1000).toISOString(),
+          fallback_embed: sourceUrl,
+          direct_url: sourceUrl,
+          is_direct_fallback: true,
+        },
+        200,
+        cacheHeader
       );
     }
 
