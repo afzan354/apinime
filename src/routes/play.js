@@ -157,7 +157,10 @@ function renderPlayerHtml(data) {
   <div class="player-wrap">
     <div class="header">
       <h1 class="title">${title}</h1>
-      <span class="badge">Episode ${data.episode}</span>
+      <div style="display: flex; gap: 8px; align-items: center;">
+        <a href="?format=json" target="_blank" style="font-size: 0.72rem; color: #94a3b8; text-decoration: none; padding: 3px 8px; border: 1px solid var(--card-border); border-radius: 6px; background: rgba(255,255,255,0.04);">JSON API</a>
+        <span class="badge">Episode ${data.episode}</span>
+      </div>
     </div>
 
     <div class="video-box">
@@ -211,10 +214,18 @@ function renderPlayerHtml(data) {
 }
 
 function sendPlayResponse(req, res, playData, cacheHeader) {
-  const wantsHtml = req.query.format === 'html' || 
+  // Sisipkan player_url ke data respons
+  if (req.originalUrl) {
+    playData.player_url = req.originalUrl.replace(/\/play\b/, '/player');
+  }
+
+  const isExplicitJson = req.query.format === 'json';
+  const wantsHtml = !isExplicitJson && (
+    req.query.format === 'html' || 
     (req.baseUrl && req.baseUrl.includes('/player')) ||
     (req.path && req.path.includes('/player')) ||
-    (req.accepts && req.accepts('html') && !req.accepts('json') && !req.xhr);
+    (req.accepts && req.accepts(['html', 'json']) === 'html')
+  );
 
   if (wantsHtml) {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
