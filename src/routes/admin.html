@@ -353,18 +353,26 @@
         <span class="badge-client">Direct Connection</span>
       </div>
       <div class="input-group">
-        <input type="text" id="series-slug" placeholder="Ketik slug (contoh: swallowed-star)" />
+        <input type="text" id="series-slug" placeholder="Ketik slug (contoh: ancient-supremacy)" />
         <button id="btn-sync-series" onclick="syncSeriesClient()">
           <span>🔄</span>
           <span>Update Series</span>
         </button>
       </div>
+      <div style="display: flex; gap: 8px; margin-top: 8px; margin-bottom: 6px;">
+        <button id="btn-sync-all-streams" class="btn-accent" onclick="syncAllStreamsForSeriesClient()" style="flex: 1; padding: 11px; font-size: 0.85rem; background: linear-gradient(135deg, #10b981, #059669); box-shadow: 0 4px 12px rgba(16, 185, 129, 0.35);">
+          <span>🎬</span>
+          <span>Tarik SEMUA Link Video Episode Anime Ini (Full Mirrors dari HP)</span>
+        </button>
+      </div>
       <div class="chips">
+        <span class="chip" onclick="setSlug('ancient-supremacy')">ancient-supremacy</span>
         <span class="chip" onclick="setSlug('swallowed-star')">swallowed-star</span>
-        <span class="chip" onclick="setSlug('spare-me-great-lord-season-3')">spare-me-great-lord-s3</span>
+        <span class="chip" onclick="setSlug('a-portrait-of-jianghu-bu-liang-ren')">bu-liang-ren</span>
+        <span class="chip" onclick="setSlug('one-slash-to-the-heavens')">one-slash</span>
+        <span class="chip" onclick="setSlug('spare-me-great-lord-season-3')">spare-me-s3</span>
         <span class="chip" onclick="setSlug('soul-land-2-the-unrivaled-tang-sect')">soul-land-2</span>
         <span class="chip" onclick="setSlug('perfect-world')">perfect-world</span>
-        <span class="chip" onclick="setSlug('link-click-season-3')">link-click-season-3</span>
       </div>
     </div>
 
@@ -560,6 +568,81 @@
         if (btn) {
           btn.disabled = false;
           btn.innerHTML = '<span>🔄</span><span>Update Series</span>';
+        }
+      }
+    }
+
+    // Tarik SEMUA Link Streaming Video untuk 1 Judul Anime (Batch dari HP)
+    async function syncAllStreamsForSeriesClient() {
+      const input = document.getElementById('series-slug');
+      if (!input) return;
+      let slug = input.value.trim().replace(/^https?:\/\/[^\/]+\//i, '').replace(/\/+$/, '');
+      if (!slug) {
+        alert('Masukkan slug anime terlebih dahulu (contoh: ancient-supremacy)!');
+        return;
+      }
+
+      const btn = document.getElementById('btn-sync-all-streams');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span>⏳</span><span>Mengambil daftar episode...</span>';
+      }
+      log('🔍 Mengambil daftar episode untuk "' + slug + '"...', 'info');
+
+      try {
+        const epRes = await fetch('/api/v1/series/' + slug + '/episodes');
+        const epData = await epRes.json();
+        
+        let episodes = epData && epData.items ? epData.items : (Array.isArray(epData) ? epData : []);
+        if (!episodes.length) {
+          log('⚠ Episode belum ada di DB. Menarik data katalog series terlebih dahulu...', 'warning');
+          await syncSeriesClient();
+          const epRes2 = await fetch('/api/v1/series/' + slug + '/episodes');
+          const epData2 = await epRes2.json();
+          episodes = epData2 && epData2.items ? epData2.items : (Array.isArray(epData2) ? epData2 : []);
+        }
+
+        if (!episodes.length) {
+          log('✗ Gagal mendapatkan episode untuk ' + slug, 'error');
+          return;
+        }
+
+        log('Ditemukan ' + episodes.length + ' episode untuk "' + slug + '". Memulai penarikan link video dari HP kamu...', 'info');
+
+        let successCount = 0;
+        for (let i = 0; i < episodes.length; i++) {
+          const ep = episodes[i];
+          let epUrl = ep.source_url || ('https://anichin.moe/' + slug + '-episode-' + ep.n + '-subtitle-indonesia/');
+          if (epUrl.startsWith('/')) epUrl = 'https://anichin.moe' + epUrl;
+
+          log('[' + (i + 1) + '/' + episodes.length + '] Menarik ' + slug + ' Ep ' + ep.n + '...', 'info');
+          try {
+            const epHtml = await fetchViaWorker(epUrl);
+            const stRes = await fetch('/admin/api/ingest-stream', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ series_id: slug, n: ep.n, html: epHtml, source_url: epUrl }),
+            });
+            const stData = await stRes.json();
+            if (stData && stData.ok) {
+              log('  ✓ Ep ' + ep.n + ' tersimpan (' + stData.mirrors + ' mirrors: ' + stData.provider + ')!', 'success');
+              successCount++;
+            } else {
+              log('  ⚠ Ep ' + ep.n + ': ' + (stData.error || 'Gagal ekstraksi'), 'warning');
+            }
+          } catch (epErr) {
+            log('  ✗ Ep ' + ep.n + ' gagal: ' + epErr.message, 'error');
+          }
+        }
+
+        log('🎉 Selesai! Berhasil menarik ' + successCount + ' episode streaming untuk ' + slug + '!', 'success');
+        await loadStats();
+      } catch (err) {
+        log('✗ Error: ' + err.message, 'error');
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = '<span>🎬</span><span>Tarik SEMUA Link Video Episode Anime Ini (Full Mirrors dari HP)</span>';
         }
       }
     }

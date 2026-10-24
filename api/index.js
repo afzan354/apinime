@@ -75,6 +75,7 @@ const apiRouter = express.Router();
 
 apiRouter.use('/home', homeRoute);
 apiRouter.use('/series/:id/episodes/:n/play', playRoute);
+apiRouter.use('/series/:id/episodes/:n/player', playRoute);
 apiRouter.use('/series', seriesRoute);
 apiRouter.use('/schedule', scheduleRoute);
 apiRouter.use('/search', searchRoute);
